@@ -1,0 +1,17 @@
+# Macro mẫu - bấm F9 trong giả lập (hoặc nút Chạy) để bật/tắt.
+#   loop  N                        0 = lặp vô hạn
+#   tap   x y [r]                  chạm 1 lần, lệch ngẫu nhiên trong bán kính r
+#   dtap  x y [r]                  chạm đúp
+#   hold  x y minMs maxMs [r]      giữ ngẫu nhiên trong khoảng
+#   swipe x1 y1 x2 y2 minMs maxMs  vuốt đường cong
+#   wait  minMs [maxMs]            chờ ngẫu nhiên (3% có thêm chần chừ)
+#   break pct minMs maxMs          cuối vòng: pct% nghỉ dài
+
+loop 0
+tap   0.500 0.500 0.03
+wait  700 1400
+tap   0.900 0.780 0.015
+wait  400 900
+swipe 0.300 0.600 0.700 0.600 250 450
+wait  1000 2200
+break 5 8000 20000

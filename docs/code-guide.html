@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DsoftEmu Code Guide</title>
+<style>
+:root{
+  --bg:#f6f7fa; --card:#fff; --text:#1c1e24; --muted:#6b7280; --line:#e3e6ec;
+  --accent:#3b78e6; --green:#22965a; --orange:#d9861e; --red:#d74141; --purple:#7c5cd6;
+  --code:#f1f3f7; --boxA:#eaf1fd; --boxB:#eaf7ef; --boxC:#fdf3e6; --boxD:#f2eefc; --grp:#fafbfd;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#121318; --card:#1b1d24; --text:#e6e8ee; --muted:#9aa1ae; --line:#2c2f39;
+    --accent:#6b9cf0; --green:#4cc283; --orange:#f0a64a; --red:#ef6b6b; --purple:#a58cf0;
+    --code:#23262f; --boxA:#1d2a42; --boxB:#1b3226; --boxC:#3a2c18; --boxD:#2a2342; --grp:#171920;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121318; --card:#1b1d24; --text:#e6e8ee; --muted:#9aa1ae; --line:#2c2f39;
+  --accent:#6b9cf0; --green:#4cc283; --orange:#f0a64a; --red:#ef6b6b; --purple:#a58cf0;
+  --code:#23262f; --boxA:#1d2a42; --boxB:#1b3226; --boxC:#3a2c18; --boxD:#2a2342; --grp:#171920;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code,.mono{font-family:Consolas,"Cascadia Mono",monospace;font-size:.92em}
+code{background:var(--code);padding:1px 5px;border-radius:4px}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 16px 80px}
+header h1{margin:0 0 4px;font-size:28px}
+header p{margin:0;color:var(--muted)}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px;margin:18px 0 8px}
+nav.toc a{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:13px;color:var(--text)}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-top:18px}
+section h2{margin:0 0 12px;font-size:20px}
+h3{margin:18px 0 8px;font-size:16px}
+.muted{color:var(--muted)}
+.diagram{width:100%;overflow-x:auto}
+.diagram svg{min-width:760px;width:100%;height:auto;display:block}
+svg text{font-family:"Segoe UI",system-ui,sans-serif;fill:var(--text)}
+svg .t{font-size:13px;font-weight:600} svg .s{font-size:11px;fill:var(--muted)} svg .lbl{font-size:10.5px;fill:var(--muted)}
+svg .grp{fill:var(--grp);stroke:var(--line);stroke-dasharray:5 4}
+svg .grpT{font-size:12px;font-weight:700;fill:var(--muted)}
+svg .A{fill:var(--boxA);stroke:var(--accent)} svg .B{fill:var(--boxB);stroke:var(--green)}
+svg .C{fill:var(--boxC);stroke:var(--orange)} svg .D{fill:var(--boxD);stroke:var(--purple)}
+svg rect.box{stroke-width:1.3;cursor:pointer;transition:opacity .15s,stroke-width .15s}
+svg rect.box:hover,svg rect.box:focus{stroke-width:2.6;outline:none}
+svg rect.box.sel{stroke-width:3.2}
+svg rect.box.dim{opacity:.35}
+svg text{pointer-events:none}
+.detail{margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:16px 18px;background:var(--grp);min-height:90px}
+.detail .ph{color:var(--muted);text-align:center;padding:20px 0}
+.detail h3{margin:0 0 4px;font-size:18px}
+.detail .file{font-size:13px;color:var(--muted);margin-bottom:10px}
+.detail h4{margin:14px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.detail ol,.detail ul{margin:0;padding-left:22px} .detail li{margin:3px 0}
+.detail table td:first-child{white-space:nowrap;color:var(--muted);font-size:13px;width:1%}
+.chip{display:inline-block;border:1px solid var(--accent);color:var(--accent);background:transparent;border-radius:999px;padding:0 9px;font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.chip:hover{background:var(--accent);color:#fff}
+svg .ar{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#arr)}
+svg .ar.hot{stroke:var(--accent);stroke-width:2}
+svg .ar.dash{stroke-dasharray:5 4}
+svg #arr path{fill:var(--muted)} svg #arrH path{fill:var(--accent)}
+.order{counter-reset:o;list-style:none;padding:0;margin:0;display:grid;gap:10px}
+.order li{counter-increment:o;display:grid;grid-template-columns:38px 1fr;gap:10px;border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.order li::before{content:counter(o);width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700}
+.order .f{font-weight:700} .order .why{color:var(--muted);font-size:13.5px}
+.tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;background:var(--code);color:var(--muted);margin-left:6px;vertical-align:1px}
+details{border:1px solid var(--line);border-radius:10px;margin:10px 0;background:var(--card)}
+details>summary{cursor:pointer;padding:12px 14px;font-weight:700;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"▸ ";color:var(--accent)} details[open]>summary::before{content:"▾ "}
+details .body{padding:0 16px 14px}
+ol.steps{margin:0;padding-left:22px} ol.steps li{margin:5px 0}
+ol.steps .where{color:var(--muted);font-size:12.5px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.03em}
+.tbl{overflow-x:auto}
+pre{background:var(--code);border-radius:8px;padding:12px 14px;overflow-x:auto;margin:8px 0;font-size:13px;line-height:1.5}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:760px){.grid2{grid-template-columns:1fr} .order li{grid-template-columns:1fr} .order li::before{margin-bottom:-4px}}
+.note{border-left:3px solid var(--orange);background:var(--code);padding:8px 12px;border-radius:0 8px 8px 0;font-size:14px;margin:10px 0}
+.pill{font-size:12px;border-radius:6px;padding:1px 6px;font-weight:600}
+.pill.ui{background:var(--boxA);color:var(--accent)} .pill.bg{background:var(--boxB);color:var(--green)}
+.pill.th{background:var(--boxC);color:var(--orange)} .pill.ext{background:var(--boxD);color:var(--purple)}
+.themebtn{float:right;background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:4px 10px;cursor:pointer;font:inherit;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <button class="themebtn" id="tbtn" type="button">◐ Sáng/Tối</button>
+  <h1>DsoftAndroidEmulator: đọc code từ đâu</h1>
+  <p>App WinForms (C# 5, build bằng <code>csc.exe</code>) bọc ngoài Android Emulator chính chủ của Google, thêm map phím và auto click kiểu người thật. Khoảng 2.800 dòng trong 10 file <code>src/*.cs</code>, tất cả cùng namespace <code>DsoftEmu</code>.</p>
+</header>
+
+<nav class="toc">
+  <a href="#arch">1. Mô hình kết nối</a>
+  <a href="#order">2. Thứ tự đọc file</a>
+  <a href="#flows">3. Các luồng chính</a>
+  <a href="#threads">4. Luồng (thread)</a>
+  <a href="#disk">5. File trên đĩa</a>
+  <a href="#touch">6. Chi tiết chạm</a>
+  <a href="#gloss">7. Thuật ngữ</a>
+</nav>
+
+<!-- ============ 1 ============ -->
+<section id="arch">
+<h2>1. Mô hình kết nối</h2>
+<p class="muted">Ba tầng: <b>DsoftEmu.exe</b> (code của bạn) → <b>tiến trình ngoài</b> (emulator.exe, adb.exe) → <b>Android</b> chạy trong máy ảo. Mũi tên xanh là đường đi của một lần chạm (phím hoặc macro → Android). <b>Bấm vào một ô</b> để xem chức năng, cách hoạt động và nó nói chuyện với ô nào; các ô không liên quan sẽ mờ đi.</p>
+<div class="diagram">
+<svg viewBox="0 0 1000 650" role="img" aria-label="Sơ đồ các thành phần">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="arrH" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <!-- top -->
+  <rect data-k="net" class="box D" x="30" y="12" width="230" height="44" rx="8"/>
+  <text class="t" x="145" y="31" text-anchor="middle">Internet</text>
+  <text class="s" x="145" y="47" text-anchor="middle">dl.google.com · github.com</text>
+
+  <rect data-k="user" class="box D" x="400" y="12" width="200" height="44" rx="8"/>
+  <text class="t" x="500" y="31" text-anchor="middle">Người dùng</text>
+  <text class="s" x="500" y="47" text-anchor="middle">chuột (UI) · bàn phím (game)</text>
+
+  <!-- group app -->
+  <rect class="grp" x="12" y="78" width="976" height="300" rx="12"/>
+  <text class="grpT" x="26" y="97">DsoftEmu.exe — 1 tiến trình WinForms</text>
+
+  <rect data-k="sdk" class="box A" x="40" y="112" width="190" height="56" rx="8"/>
+  <text class="t" x="135" y="135" text-anchor="middle">SdkInstaller</text>
+  <text class="s" x="135" y="153" text-anchor="middle">tải emulator, adb, image, scrcpy</text>
+
+  <rect data-k="main" class="box A" x="380" y="112" width="240" height="56" rx="8"/>
+  <text class="t" x="500" y="135" text-anchor="middle">MainForm</text>
+  <text class="s" x="500" y="153" text-anchor="middle">UI 5 trang + nối dây mọi thứ</text>
+
+  <rect data-k="key" class="box A" x="760" y="112" width="200" height="56" rx="8"/>
+  <text class="t" x="860" y="135" text-anchor="middle">KeyMapper</text>
+  <text class="s" x="860" y="153" text-anchor="middle">hook phím toàn cục → chạm</text>
+
+  <rect data-k="host" class="box A" x="40" y="212" width="150" height="56" rx="8"/>
+  <text class="t" x="115" y="235" text-anchor="middle">HostInfo</text>
+  <text class="s" x="115" y="253" text-anchor="middle">CPU/RAM/GPU (WMI)</text>
+
+  <rect data-k="emu" class="box A" x="215" y="212" width="215" height="56" rx="8"/>
+  <text class="t" x="322" y="235" text-anchor="middle">EmulatorController + Adb</text>
+  <text class="s" x="322" y="253" text-anchor="middle">tạo AVD, chạy/dừng, watchdog</text>
+
+  <rect data-k="picker" class="box A" x="450" y="212" width="140" height="56" rx="8"/>
+  <text class="t" x="520" y="235" text-anchor="middle">PickerForm</text>
+  <text class="s" x="520" y="253" text-anchor="middle">lấy toạ độ</text>
+
+  <rect data-k="macro" class="box A" x="760" y="212" width="160" height="56" rx="8"/>
+  <text class="t" x="840" y="235" text-anchor="middle">MacroRunner</text>
+  <text class="s" x="840" y="253" text-anchor="middle">1 thread / macro</text>
+
+  <rect data-k="util" class="box B" x="40" y="300" width="250" height="56" rx="8"/>
+  <text class="t" x="165" y="323" text-anchor="middle">Util.cs (dùng chung)</text>
+  <text class="s" x="165" y="341" text-anchor="middle">Log · Settings · FileUtil · Proc</text>
+
+  <rect data-k="touch" class="box A" x="610" y="300" width="350" height="64" rx="8"/>
+  <text class="t" x="785" y="321" text-anchor="middle">TouchService (Input.cs)</text>
+  <text class="s" x="785" y="338" text-anchor="middle">Screen · Human (ngẫu nhiên) · ITouch =</text>
+  <text class="s" x="785" y="354" text-anchor="middle">ScrcpyTouch (nhanh) | AdbTouch (dự phòng)</text>
+
+  <!-- group processes -->
+  <rect class="grp" x="12" y="398" width="976" height="96" rx="12"/>
+  <text class="grpT" x="26" y="417">Tiến trình ngoài trên Windows</text>
+  <rect data-k="qemu" class="box C" x="40" y="428" width="290" height="54" rx="8"/>
+  <text class="t" x="185" y="450" text-anchor="middle">emulator.exe → qemu-system-x86_64</text>
+  <text class="s" x="185" y="468" text-anchor="middle">máy ảo, tăng tốc bằng WHPX</text>
+  <rect data-k="adb" class="box C" x="380" y="428" width="200" height="54" rx="8"/>
+  <text class="t" x="480" y="450" text-anchor="middle">adb.exe</text>
+  <text class="s" x="480" y="468" text-anchor="middle">server cổng 5037, forward TCP</text>
+
+  <!-- group android -->
+  <rect class="grp" x="12" y="514" width="976" height="124" rx="12"/>
+  <text class="grpT" x="26" y="533">Android (khách, trong máy ảo) — serial emulator-5554</text>
+  <rect data-k="android" class="box D" x="40" y="548" width="290" height="70" rx="8"/>
+  <text class="t" x="185" y="574" text-anchor="middle">Hệ thống Android + game/app</text>
+  <text class="s" x="185" y="592" text-anchor="middle">nhận sự kiện chạm như ngón tay thật</text>
+  <rect data-k="adbd" class="box D" x="380" y="548" width="200" height="70" rx="8"/>
+  <text class="t" x="480" y="574" text-anchor="middle">adbd</text>
+  <text class="s" x="480" y="592" text-anchor="middle">shell, push, getprop</text>
+  <rect data-k="scrcpy" class="box D" x="640" y="548" width="320" height="70" rx="8"/>
+  <text class="t" x="800" y="574" text-anchor="middle">scrcpy-server v2.7 (app_process)</text>
+  <text class="s" x="800" y="592" text-anchor="middle">chỉ bật kênh control, không stream video</text>
+  <text class="s" x="800" y="607" text-anchor="middle">→ bơm chạm vào Android</text>
+
+  <!-- arrows -->
+  <path class="ar" d="M500,56 V112"/><text class="lbl" x="506" y="90">click</text>
+  <path class="ar hot" style="marker-end:url(#arrH)" d="M600,40 C760,40 860,60 860,112"/><text class="lbl" x="690" y="34">phím (WH_KEYBOARD_LL)</text>
+  <path class="ar" d="M380,140 H230"/><text class="lbl" x="262" y="133">Tải SDK</text>
+  <path class="ar" d="M135,112 V56"/><text class="lbl" x="141" y="88">HTTPS</text>
+  <path class="ar" d="M430,168 L360,212"/><text class="lbl" x="306" y="192">Start/Stop</text>
+  <path class="ar dash" d="M395,212 L455,168"/><text class="lbl" x="432" y="200">event Booted</text>
+  <path class="ar" d="M520,168 V212"/>
+  <path class="ar" d="M620,152 L760,228"/><text class="lbl" x="652" y="208">ToggleMacro</text>
+  <path class="ar dash" d="M800,168 V212"/><text class="lbl" x="738" y="196">phím macro</text>
+  <path class="ar hot" style="marker-end:url(#arrH)" d="M945,168 V300"/>
+  <path class="ar hot" style="marker-end:url(#arrH)" d="M840,268 V300"/>
+  <path class="ar" d="M580,168 C600,230 640,260 660,300"/><text class="lbl" x="600" y="290">ConnectInput()</text>
+  <path class="ar" d="M280,268 L210,428"/><text class="lbl" x="156" y="390">Proc.Start</text>
+  <path class="ar" d="M370,268 L450,428"/><text class="lbl" x="352" y="390">adb devices/getprop/emu kill</text>
+  <path class="ar" d="M520,268 L500,428"/><text class="lbl" x="512" y="300">screencap</text>
+  <path class="ar" d="M640,364 L560,428"/><text class="lbl" x="606" y="414">push jar, forward</text>
+  <path class="ar" d="M185,482 V548"/><text class="lbl" x="191" y="520">chạy</text>
+  <path class="ar" d="M480,482 V548"/>
+  <path class="ar" d="M580,583 H640"/><text class="lbl" x="584" y="576">khởi chạy</text>
+  <path class="ar hot" style="marker-end:url(#arrH)" d="M900,364 V548"/><text class="lbl" x="906" y="430">TCP socket</text><text class="lbl" x="906" y="444">gói chạm 32 byte</text><text class="lbl" x="906" y="458">(qua adb forward)</text>
+</svg>
+</div>
+<div id="detail" class="detail" aria-live="polite"><div class="ph">Bấm vào một ô trong sơ đồ để xem chi tiết.</div></div>
+<div class="note">Ý chính: app <b>không tự giả lập Android</b>. Nó sinh file cấu hình AVD, gọi <code>emulator.exe</code> của Google, rồi dùng <code>adb</code> + <code>scrcpy-server</code> để điều khiển. Toàn bộ giao tiếp với tiến trình ngoài đi qua lớp <code>Proc</code> trong <a href="../src/Util.cs">Util.cs</a>.</div>
+</section>
+
+<!-- ============ 2 ============ -->
+<section id="order">
+<h2>2. Thứ tự đọc file</h2>
+<p class="muted">Đọc từ trên xuống. Mỗi bước ghi rõ cần hiểu gì trước khi sang bước sau.</p>
+<ol class="order">
+  <li><div><span class="f"><a href="../src/Program.cs">Program.cs</a></span><span class="tag">50 dòng</span>
+    <div>Điểm vào <code>Main()</code>: Mutex chặn mở 2 lần → <code>Log.Init</code> → bắt lỗi toàn cục (chỉ ghi log) → <code>Application.Run(new MainForm())</code>.</div>
+    <div class="why">Hiểu: app chỉ có 1 form chính, mọi thứ bắt đầu từ constructor của MainForm.</div></div></li>
+  <li><div><span class="f"><a href="../src/Util.cs">Util.cs</a></span><span class="tag">222 dòng · nền tảng</span>
+    <div><code>Log</code> (ghi file + event <code>Line</code> để UI hiện), <code>Settings</code> (đọc/ghi <code>settings.ini</code> dạng key=value), <code>FileUtil</code> (xoá/chuyển thư mục), <code>Proc</code> (chạy exe: <code>Run</code> chờ xong, <code>RunBytes</code> lấy nhị phân, <code>Start</code> chạy nền đọc từng dòng).</div>
+    <div class="why">Hiểu: <code>Proc.Run/Start</code> là "cửa" duy nhất ra emulator.exe/adb.exe. Đọc kỹ 3 hàm này thì các file sau dễ đọc.</div></div></li>
+  <li><div><span class="f"><a href="../src/MainForm.cs">MainForm.cs</a> — chỉ đọc phần nối dây</span><span class="tag">dòng 81–124, 894–953</span>
+    <div>Constructor tạo <code>Settings</code>, <code>HostInfo</code>, <code>EmulatorController</code>, <code>TouchService</code>, <code>KeyMapper</code> rồi gắn event: <code>Log.Line</code>, <code>emu.Booted → ConnectInput</code>, <code>emu.Stopped</code>, <code>MacroRunner.Changed</code>, timer 1,5s. Sau đó <code>OnLoaded</code>, <code>ConnectInput</code>, <code>OnClosing</code>.</div>
+    <div class="why">Hiểu: ai tạo ai, ai lắng nghe event của ai. Phần dựng giao diện (Build*) để sau.</div></div></li>
+  <li><div><span class="f"><a href="../src/Emulator.cs">Emulator.cs</a></span><span class="tag">322 dòng</span>
+    <div><code>Adb</code>: bọc lệnh adb theo serial. <code>EmulatorController</code>: <code>CreateAvd</code> (tự ghi <code>config.ini</code>, không cần Java/avdmanager) → <code>Start</code> (ghép tham số dòng lệnh) → <code>BootWatch</code> (thread chờ <code>sys.boot_completed=1</code> hai lần) → <code>OnExit</code> (watchdog tự cold boot tối đa 3 lần) → <code>Stop</code>. Thêm <code>WipeAvd</code>, <code>DeleteAvd</code>, <code>MoveData</code>.</div>
+    <div class="why">Hiểu: vòng đời máy ảo, và vì sao event <code>Booted</code> là mốc để bật input.</div></div></li>
+  <li><div><span class="f"><a href="../src/Input.cs">Input.cs</a></span><span class="tag">345 dòng · quan trọng nhất</span>
+    <div><code>Screen</code> (poll <code>wm size</code> + hướng xoay mỗi 3s), <code>ITouch</code> với 2 bản cài đặt <code>ScrcpyTouch</code> / <code>AdbTouch</code>, <code>Human</code> (Gauss, log-normal, tam giác), <code>TouchService</code> (<code>Raw</code>, <code>Tap</code>, <code>Hold</code>, <code>Swipe</code> Bezier).</div>
+    <div class="why">Hiểu: toạ độ luôn chuẩn hoá 0..1, chỉ đổi sang pixel ở <code>Send()</code>. Xem mục 6 bên dưới.</div></div></li>
+  <li><div><span class="f"><a href="../src/KeyMapper.cs">KeyMapper.cs</a></span><span class="tag">281 dòng</span>
+    <div><code>Load</code> parse file keymap → <code>Dictionary&lt;vk, Bind&gt;</code>. <code>HookProc</code> (hook bàn phím mức thấp) lọc phím → đẩy vào hàng đợi → thread <code>Worker</code> → <code>Handle</code> (tap/joy/macro/toggle).</div>
+    <div class="why">Hiểu: hook chỉ "nuốt" phím khi cửa sổ qemu/emulator đang focus; phím nhả luôn được xử lý để không kẹt chạm.</div></div></li>
+  <li><div><span class="f"><a href="../src/Macro.cs">Macro.cs</a></span><span class="tag">155 dòng</span>
+    <div><code>Macro.Parse</code> đọc script (<code>loop/tap/dtap/hold/swipe/wait/break</code>). <code>MacroRunner</code> chạy mỗi macro 1 thread, huỷ bằng <code>CancellationToken</code>.</div>
+    <div class="why">Hiểu: macro chỉ gọi <code>TouchService</code>, không biết gì về scrcpy/adb.</div></div></li>
+  <li><div><span class="f"><a href="../src/SdkInstaller.cs">SdkInstaller.cs</a></span><span class="tag">296 dòng</span>
+    <div>Đọc XML kho Google (<code>repository2-3.xml</code>, <code>sys-img2-3.xml</code>), lọc kênh stable + Windows x64, chọn revision cao nhất, tải zip, kiểm SHA1/SHA256, giải nén, ghi marker <code>.dsoft_rev</code>. Tải thêm scrcpy-server từ GitHub.</div>
+    <div class="why">Đọc khi cần sửa phần tải. Không liên quan luồng chạy hằng ngày.</div></div></li>
+  <li><div><span class="f"><a href="../src/HostInfo.cs">HostInfo.cs</a> + <a href="../src/PickerForm.cs">PickerForm.cs</a></span><span class="tag">nhỏ</span>
+    <div><code>HostInfo</code>: WMI đọc phần cứng, <code>ApplyRecommended</code> đề xuất nhân/RAM/độ phân giải. <code>PickerForm</code>: chụp màn hình Android qua <code>adb exec-out screencap</code>, click → toạ độ chuẩn hoá chèn vào editor.</div></div></li>
+  <li><div><span class="f"><a href="../src/MainForm.cs">MainForm.cs</a> — phần còn lại</span><span class="tag">UI</span>
+    <div>5 trang: <code>BuildHome</code> (checklist + nút Chạy/Dừng), <code>BuildImages</code> (chọn bản Android), <code>BuildConfig</code>, <code>BuildKeys</code>, <code>BuildMacro</code>. <code>RefreshChecks</code>/<code>RefreshRuntime</code> cập nhật trạng thái. Biến <code>uiOp</code>: 0 rảnh, 1 đang bật, 2 đang dừng.</div></div></li>
+</ol>
+<p class="muted" style="margin-top:12px">Ngoài <code>src/</code>: <a href="../build.bat">build.bat</a> (csc → <code>bin\DsoftEmu.exe</code>, copy keymaps/macros), <a href="../pack.bat">pack.bat</a> (đóng gói bản lite/offline vào <code>dist\</code>), <a href="../keymaps/default.txt">keymaps/default.txt</a> và <a href="../macros/sample.txt">macros/sample.txt</a> có chú thích cú pháp ngay trong file.</p>
+</section>
+
+<!-- ============ 3 ============ -->
+<section id="flows">
+<h2>3. Các luồng chính</h2>
+<p class="muted">Bấm để mở từng luồng. Mỗi bước ghi file và hàm.</p>
+
+<details open><summary>A. Mở app</summary><div class="body"><ol class="steps">
+  <li><code>Program.Main</code> → Mutex <code>DsoftEmu_single_instance</code> → <code>Log.Init("logs")</code> <span class="where">Program.cs:30</span></li>
+  <li><code>new MainForm()</code>: đọc <code>settings.ini</code>; <code>HostInfo.Detect()</code>; lần đầu (chưa có key <code>Cores</code>) thì <code>ApplyRecommended</code> + lưu <span class="where">MainForm.cs:81</span></li>
+  <li>Tạo <code>EmulatorController</code>, <code>KeyMapper(touch)</code> (constructor khởi thread <code>Worker</code>), gán <code>mapper.ToggleMacro = ToggleMacro</code></li>
+  <li>Dựng 5 trang, gắn event (<code>Log.Line</code>, <code>emu.Booted</code>, <code>emu.Stopped</code>, timer, kéo thả APK)</li>
+  <li><code>OnLoaded</code>: nạp keymap → <code>mapper.Install()</code> (cài hook) → refresh UI → <code>CheckAccel()</code> (<code>emulator -accel-check</code>) → bật timer → nếu Android đã chạy sẵn từ trước thì <code>ConnectInput()</code> luôn <span class="where">MainForm.cs:926</span></li>
+</ol></div></details>
+
+<details><summary>B. Bấm ▶ Chạy → Android boot → input sẵn sàng</summary><div class="body"><ol class="steps">
+  <li><code>StartEmu(cold)</code>: <code>SaveUi()</code>, kiểm tra có emulator.exe + image, <code>uiOp=1</code>, gọi <code>Bg(...)</code> (Task.Run) <span class="where">MainForm.cs:495</span></li>
+  <li><code>emu.Start(cold)</code> → <code>CreateAvd()</code> ghi lại <code>avd\&lt;Tên&gt;.avd\config.ini</code> theo cấu hình hiện tại (không đụng dữ liệu) <span class="where">Emulator.cs:209, 155</span></li>
+  <li><code>adb start-server</code>, ghép tham số: <code>-avd -port -gpu -cores -memory</code> + tuỳ chọn (<code>-wipe-data</code> nếu có file <code>.dsoft_wipe</code>, <code>-no-snapshot-load</code> nếu cold boot, <code>-feature -Vulkan</code>...)</li>
+  <li><code>Proc.Start(emulator.exe)</code>: mọi dòng output ghi vào <code>logs\emulator.log</code>, dòng ERROR/FATAL đẩy lên log UI. Gắn <code>proc.Exited += OnExit</code></li>
+  <li>Thread <code>BootWatch</code>: sau 6s đặt ưu tiên AboveNormal cho <code>qemu-system*</code>; poll mỗi 2s tối đa 400s: <code>adb devices</code> + <code>getprop sys.boot_completed</code>, cần đạt 2 lần cách 3s <span class="where">Emulator.cs:254</span></li>
+  <li>Bắn event <code>Booted</code> → MainForm chạy <code>ConnectInput()</code> trên Task <span class="where">MainForm.cs:115, 894</span></li>
+  <li><code>ConnectInput</code>: <code>touch.Scr.Attach(adb)</code> (bắt đầu poll kích thước màn hình) → thử <code>ScrcpyTouch.Start()</code>; lỗi hoặc thiếu file jar thì dùng <code>AdbTouch</code> → gán <code>touch.Inj</code></li>
+  <li><code>ScrcpyTouch.Start</code>: <code>adb push</code> jar → <code>adb forward tcp:PORT localabstract:scrcpy_ID</code> → <code>adb shell app_process ... Server 2.7 video=false audio=false control=true ...</code> → thử kết nối TCP tới khi đọc được "dummy byte" (≤ 6s) → thread <code>Drain</code> giữ kết nối <span class="where">Input.cs:78</span></li>
+</ol></div></details>
+
+<details><summary>C. Nhấn 1 phím trong cửa sổ giả lập → chạm trên Android</summary><div class="body"><ol class="steps">
+  <li>Windows gọi <code>KeyMapper.HookProc</code>. Bỏ qua phím do phần mềm khác bơm (cờ <code>0x10</code>) <span class="where">KeyMapper.cs:126</span></li>
+  <li>Phím có trong <code>byVk</code>? Nếu là phím nhấn: chỉ xử lý khi map đang bật (hoặc là phím toggle) và <code>EmuForeground()</code> = cửa sổ trước mặt thuộc tiến trình <code>qemu-system*</code>/<code>emulator</code> (có cache theo pid)</li>
+  <li>Đẩy <code>(vk, down/up)</code> vào <code>BlockingCollection</code>, trả về 1 để <b>nuốt phím</b> (Android không nhận phím đó)</li>
+  <li>Thread <code>Worker</code> lấy ra → <code>Handle</code>: bỏ auto-repeat; theo loại bind:
+    <ul>
+      <li><b>tap</b>: nhấn → <code>Jittered</code> (lệch ngẫu nhiên bán kính r) → <code>Raw(0=down)</code>; nhả → <code>Raw(1=up)</code></li>
+      <li><b>joy</b>: tính hướng từ 4 phím → chạm giữ ở tâm, kéo tới tâm + hướng × bán kính qua 3 bước <code>Raw(2=move)</code>; thả hết phím → <code>Raw(1)</code></li>
+      <li><b>macro</b>: gọi <code>ToggleMacro(tên)</code> của MainForm</li>
+      <li><b>toggle</b>: đảo <code>Enabled</code>, tắt thì nhả hết chạm</li>
+    </ul></li>
+  <li><code>TouchService.Raw</code> kẹp toạ độ 0..1 → <code>Inj.Send(action, id, nx, ny)</code></li>
+  <li><code>ScrcpyTouch.Send</code>: đổi sang pixel theo <code>Screen.W/H</code> (làm tròn bội số 8), đóng gói 32 byte, ghi socket (có lock). <code>AdbTouch</code> thì gom down→up rồi gửi <code>input tap</code> hoặc <code>input swipe</code> qua 1 phiên <code>adb shell</code></li>
+</ol></div></details>
+
+<details><summary>D. Chạy macro (auto click)</summary><div class="body"><ol class="steps">
+  <li>Nút ▶ ở trang Auto click hoặc phím <code>macro</code> trong keymap → <code>MainForm.ToggleMacro(name)</code>: đang chạy thì dừng, chưa chạy thì đọc <code>macros\name.txt</code> <span class="where">MainForm.cs:880</span></li>
+  <li><code>Macro.Parse</code> → danh sách bước + <code>Loop</code>, <code>Break</code> <span class="where">Macro.cs:31</span></li>
+  <li><code>MacroRunner.Start</code>: tạo <code>CancellationTokenSource</code>, cấp 1 id chạm riêng (từ 2001), mở thread mới</li>
+  <li>Mỗi vòng: chờ <code>touch.Ready</code> → chạy từng bước bằng <code>TouchService.Tap/Hold/Swipe</code>; <code>wait</code> có 3% chần chừ thêm; cuối vòng có <code>pct%</code> nghỉ dài</li>
+  <li>Dừng: <code>cts.Cancel()</code> → <code>TouchService.Wait</code> ném <code>OperationCanceledException</code> → <code>finally</code> trong Hold/Swipe luôn gửi <code>Raw(1=up)</code> nên không kẹt ngón</li>
+</ol></div></details>
+
+<details><summary>E. Emulator crash → tự khởi động lại</summary><div class="body"><ol class="steps">
+  <li><code>proc.Exited</code> → <code>OnExit</code> lấy exit code <span class="where">Emulator.cs:292</span></li>
+  <li>Nếu không phải do bấm Dừng (<code>stopping=false</code>), mã ≠ 0, bật <code>AutoRestart</code>, chưa quá 3 lần → chờ 3s → <code>Start(cold:true)</code></li>
+  <li>Ngược lại bắn event <code>Stopped</code> → MainForm đặt <code>androidReady=false</code>, refresh UI. Bộ đếm <code>autoRestarts</code> về 0 khi boot thành công</li>
+</ol></div></details>
+
+<details><summary>F. Bấm ■ Dừng / đóng app</summary><div class="body"><ol class="steps">
+  <li><code>StopEmu</code>: <code>uiOp=2</code> → <code>emu.Stop()</code>: <code>stopping=true</code>, <code>adb emu kill</code>, chờ tối đa 25s, quá thì <code>taskkill /T /F</code> <span class="where">Emulator.cs:310</span></li>
+  <li>Đóng form (<code>OnClosing</code>): hỏi tắt giả lập không → dừng timer, dừng mọi macro, gỡ hook, đóng kết nối input <span class="where">MainForm.cs:940</span></li>
+</ol></div></details>
+
+<details><summary>G. Tải SDK + bản Android</summary><div class="body"><ol class="steps">
+  <li><code>InstallTools</code>: đọc <code>repository2-3.xml</code> (dự phòng 2-1) → <code>Parse</code> lọc stable + windows/x64 → <code>Best</code> chọn rev cao nhất cho <code>platform-tools</code>, <code>emulator</code> <span class="where">SdkInstaller.cs:77</span></li>
+  <li><code>InstallZip</code>: marker <code>.dsoft_rev</code> trùng URL thì bỏ qua; không thì tải vào <code>sdk\.tmp</code>, kiểm checksum, giải nén, chuyển vào chỗ đích</li>
+  <li>Tải <code>scrcpy-server-v2.7</code> từ GitHub (không có checksum)</li>
+  <li>Trang Bản Android: <code>ListImages</code> gộp danh sách online (API ≥ 28) + bản đã cài trên đĩa (dùng được khi mất mạng); <code>InstallImage</code> dùng lại <code>InstallZip</code></li>
+</ol></div></details>
+</section>
+
+<!-- ============ 4 ============ -->
+<section id="threads">
+<h2>4. Các luồng (thread) đang chạy</h2>
+<p class="muted">Code chạy song song nhiều chỗ. Muốn đụng UI từ thread khác phải đi qua <code>MainForm.UI(...)</code> (BeginInvoke).</p>
+<div class="tbl"><table>
+<tr><th>Thread</th><th>Tạo ở đâu</th><th>Làm gì</th></tr>
+<tr><td><span class="pill ui">UI</span></td><td>Application.Run</td><td>Form, timer 1,5s <code>RefreshRuntime</code>, và callback <code>HookProc</code> (hook được cài trên thread này nên Windows gọi lại trên thread này)</td></tr>
+<tr><td><span class="pill bg">Task</span></td><td><code>MainForm.Bg()</code>, <code>Task.Run</code></td><td>Việc nặng: Start/Stop emulator, tải SDK, cài APK, <code>ConnectInput</code>. Xong gọi <code>UI(RefreshAll)</code></td></tr>
+<tr><td><span class="pill th">BootWatch</span></td><td><code>EmulatorController.Start</code></td><td>Chờ boot xong, bắn <code>Booted</code></td></tr>
+<tr><td><span class="pill th">Screen poll</span></td><td><code>Screen.Attach</code></td><td>Mỗi 3s đọc kích thước + hướng xoay (chỉ tạo 1 lần)</td></tr>
+<tr><td><span class="pill th">KeyMapper.Worker</span></td><td>constructor KeyMapper</td><td>Xử lý hàng đợi phím, gửi chạm. Ưu tiên AboveNormal</td></tr>
+<tr><td><span class="pill th">macro &lt;tên&gt;</span></td><td><code>MacroRunner.Start</code></td><td>1 thread mỗi macro đang chạy</td></tr>
+<tr><td><span class="pill th">Drain</span></td><td><code>ScrcpyTouch.Start</code></td><td>Đọc bỏ dữ liệu từ socket; socket đóng → <code>alive=false</code></td></tr>
+<tr><td><span class="pill ext">ThreadPool</span></td><td><code>Proc.Start</code></td><td>Callback từng dòng output của emulator/scrcpy, <code>proc.Exited</code> → <code>OnExit</code></td></tr>
+</table></div>
+<p class="muted">Chỗ đồng bộ: <code>lock(touch)</code> trong ConnectInput, <code>lock(lk)</code> khi ghi socket scrcpy, <code>lock(running)</code> trong MacroRunner, <code>volatile</code> cho <code>Inj</code>, <code>IsBooted</code>, <code>uiOp</code>, <code>androidReady</code>.</p>
+</section>
+
+<!-- ============ 5 ============ -->
+<section id="disk">
+<h2>5. File trên đĩa (cạnh DsoftEmu.exe)</h2>
+<div class="grid2">
+<div>
+<pre>bin\
+├─ DsoftEmu.exe
+├─ settings.ini          Settings
+├─ keymaps\default.txt   KeyMapper
+├─ macros\*.txt          Macro
+├─ logs\
+│  ├─ app.log            Log (xoá khi &gt; 4 MB)
+│  └─ emulator.log       output emulator.exe
+├─ sdk\                  key SdkDir
+│  ├─ platform-tools\adb.exe
+│  ├─ emulator\emulator.exe
+│  ├─ platforms\         (rỗng, emulator cần)
+│  ├─ system-images\android-30\
+│  │   google_apis_playstore\x86_64\
+│  └─ scrcpy-server-v2.7
+└─ avd\                  key AvdHome
+   ├─ Dsoft.ini          path= tới .avd
+   └─ Dsoft.avd\
+      ├─ config.ini      do CreateAvd ghi
+      ├─ userdata-qemu.img ...
+      └─ .dsoft_wipe     cờ "lần sau -wipe-data"</pre>
+<p class="muted">Tên AVD: API 30 + Play Store giữ tên cũ <code>Dsoft</code>; còn lại <code>Dsoft_api&lt;N&gt;_play</code> hoặc <code>_gapi</code>. Mỗi bản Android một AVD riêng (<code>AvdNameFor</code>, Emulator.cs:93).</p>
+</div>
+<div class="tbl"><table>
+<tr><th>Key settings.ini</th><th>Mặc định</th><th>Dùng ở</th></tr>
+<tr><td>Api / ImageTag / Abi</td><td>30 / google_apis_playstore / x86_64</td><td>chọn image + tên AVD</td></tr>
+<tr><td>Cores / RamMB</td><td>theo HostInfo</td><td>config.ini + tham số</td></tr>
+<tr><td>Width / Height / Dpi</td><td>1280 / 720 / 240</td><td>config.ini</td></tr>
+<tr><td>Gpu</td><td>host</td><td><code>-gpu</code></td></tr>
+<tr><td>QuickBoot</td><td>1</td><td>0 → <code>-no-snapshot</code></td></tr>
+<tr><td>BootAnim</td><td>1</td><td>0 → <code>-no-boot-anim</code></td></tr>
+<tr><td>DisableVulkan</td><td>1</td><td><code>-feature -Vulkan</code></td></tr>
+<tr><td>NoAudio</td><td>0</td><td><code>-no-audio</code></td></tr>
+<tr><td>AutoRestart</td><td>1</td><td>watchdog OnExit</td></tr>
+<tr><td>HighPriority</td><td>1</td><td>BootWatch</td></tr>
+<tr><td>ExtraArgs</td><td>""</td><td>nối thêm tham số</td></tr>
+<tr><td>Port</td><td>5554</td><td>serial <code>emulator-5554</code></td></tr>
+<tr><td>SdkDir / AvdHome</td><td>sdk / avd</td><td>đổi được bằng MoveData</td></tr>
+<tr><td>DataSize / AvdName</td><td>8G / tự tính</td><td>chỉ sửa tay</td></tr>
+</table></div>
+</div>
+</section>
+
+<!-- ============ 6 ============ -->
+<section id="touch">
+<h2>6. Chi tiết hệ chạm</h2>
+<div class="grid2">
+<div>
+<h3>Quy ước</h3>
+<ul>
+  <li>Toạ độ <b>chuẩn hoá 0..1</b> ở mọi tầng trên (keymap, macro, TouchService). Chỉ <code>Send()</code> mới đổi sang pixel.</li>
+  <li>Bán kính <code>r</code> tính theo <b>cạnh ngắn</b> màn hình; <code>TouchService.Radius</code> đổi ra rx, ry cho từng trục.</li>
+  <li><code>action</code>: 0 = down, 1 = up, 2 = move.</li>
+  <li><b>id ngón tay</b>: mỗi bind keymap một id từ 10; mỗi lần chạy macro một id từ 2001. Khác id → đa điểm thật (chạy WASD + bấm nút cùng lúc).</li>
+  <li><code>Human</code>: lệch vị trí kiểu Gauss (dày ở tâm), thời gian nhấn log-normal quanh 85ms (45–180), chờ dạng tam giác <code>Between(a,b)</code>, swipe theo Bezier bậc 2 + ease in-out.</li>
+</ul>
+</div>
+<div>
+<h3>Gói chạm gửi scrcpy-server (32 byte, big-endian)</h3>
+<div class="tbl"><table>
+<tr><th>Offset</th><th>Byte</th><th>Nội dung</th></tr>
+<tr><td>0</td><td>1</td><td>type = 2 (INJECT_TOUCH_EVENT)</td></tr>
+<tr><td>1</td><td>1</td><td>action</td></tr>
+<tr><td>2</td><td>8</td><td>pointer id</td></tr>
+<tr><td>10</td><td>4</td><td>x pixel</td></tr>
+<tr><td>14</td><td>4</td><td>y pixel</td></tr>
+<tr><td>18</td><td>2</td><td>width màn hình</td></tr>
+<tr><td>20</td><td>2</td><td>height màn hình</td></tr>
+<tr><td>22</td><td>2</td><td>pressure (0 khi up, 0xFFFF còn lại)</td></tr>
+<tr><td>24</td><td>4</td><td>actionButton = 0</td></tr>
+<tr><td>28</td><td>4</td><td>buttons = 0</td></tr>
+</table></div>
+<p class="muted">Bố cục này gắn với scrcpy 2.7 (<code>SdkInstaller.ScrcpyVersion</code>). Đổi phiên bản scrcpy thì phải kiểm lại bố cục gói tin.</p>
+</div>
+</div>
+</section>
+
+<!-- ============ 7 ============ -->
+<section id="gloss">
+<h2>7. Thuật ngữ</h2>
+<div class="tbl"><table>
+<tr><th>Từ</th><th>Nghĩa trong project này</th></tr>
+<tr><td>AVD</td><td>Android Virtual Device: thư mục <code>.avd</code> chứa cấu hình + ổ dữ liệu của 1 máy ảo.</td></tr>
+<tr><td>System image</td><td>Bộ file hệ điều hành Android (<code>system.img</code>...) theo API + tag + abi. Chỉ đọc, dùng chung.</td></tr>
+<tr><td>WHPX</td><td>Windows Hypervisor Platform: tăng tốc phần cứng cho QEMU khi Hyper-V đang bật. Kiểm bằng <code>emulator -accel-check</code>.</td></tr>
+<tr><td>adb / adbd</td><td>Công cụ debug Android: <code>adb.exe</code> ở Windows nói chuyện với <code>adbd</code> trong Android.</td></tr>
+<tr><td>scrcpy-server</td><td>File jar chạy trong Android bằng <code>app_process</code>; ở đây chỉ dùng kênh điều khiển để bơm chạm nhanh, đa điểm.</td></tr>
+<tr><td>Quick boot / Cold boot</td><td>Quick boot: lưu snapshot RAM khi tắt, mở lại nhanh. Cold boot: bỏ qua snapshot, boot từ đầu (<code>-no-snapshot-load</code>).</td></tr>
+<tr><td>Xoá trắng (wipe)</td><td>Xoá userdata/cache/snapshot trong <code>.avd</code>, đặt cờ <code>.dsoft_wipe</code> để lần chạy tới thêm <code>-wipe-data</code>.</td></tr>
+<tr><td>WH_KEYBOARD_LL</td><td>Hook bàn phím mức thấp toàn hệ thống (id 13) của Windows, dùng trong KeyMapper.</td></tr>
+</table></div>
+<p class="muted">Gỡ lỗi: không có debugger vì build bằng csc. Xem <code>bin\logs\app.log</code> (mọi <code>Log.I</code>) và <code>bin\logs\emulator.log</code> (output gốc của emulator).</p>
+</section>
+</div>
+<script>
+(function(){
+  var root=document.documentElement,b=document.getElementById('tbtn');
+  try{var t=localStorage.getItem('theme');if(t)root.setAttribute('data-theme',t);}catch(e){}
+  b.addEventListener('click',function(){
+    var cur=root.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+    var n=cur==='dark'?'light':'dark';root.setAttribute('data-theme',n);
+    try{localStorage.setItem('theme',n);}catch(e){}
+  });
+})();
+</script>
+<script>
+(function(){
+  // [chiều, ô kia, mô tả]. "→" = ô này gọi/gửi tới ô kia, "←" = ô kia gọi/gửi tới ô này.
+  var N={
+    net:{t:"Internet",f:"nguồn tải bên ngoài",
+      fn:"Nơi SdkInstaller tải các gói về. App không cần Java hay sdkmanager.",
+      how:["Đọc danh mục gói: <code>dl.google.com/android/repository/repository2-3.xml</code> (dự phòng <code>repository2-1.xml</code>).",
+           "Danh mục image theo tag: <code>sys-img/&lt;tag&gt;/sys-img2-3.xml</code>.",
+           "Tải zip platform-tools, emulator, system image (có checksum SHA1/SHA256 trong XML).",
+           "Tải <code>scrcpy-server-v2.7</code> từ GitHub releases (không có checksum).",
+           "Bật TLS 1.2 trong constructor SdkInstaller để HTTPS chạy được trên .NET 4.8."],
+      io:[["←","sdk","HTTP GET bằng WebClient / HttpWebRequest, log % mỗi 10%"]]},
+    user:{t:"Người dùng",f:"",
+      fn:"Có 3 cách người dùng tác động vào hệ thống.",
+      how:["Chuột trên cửa sổ DsoftEmu: bấm nút, sửa keymap/macro, kéo thả file .apk.",
+           "Bàn phím khi cửa sổ giả lập đang focus: KeyMapper bắt và đổi thành chạm.",
+           "Chuột trực tiếp trên cửa sổ emulator: đi thẳng vào emulator, app không đụng tới."],
+      io:[["→","main","click nút, kéo thả APK, Ctrl+S trong editor"],
+          ["→","key","phím đi qua hook toàn cục WH_KEYBOARD_LL"],
+          ["→","qemu","chuột/chạm trực tiếp trên cửa sổ máy ảo"],
+          ["→","picker","click/kéo trên ảnh chụp để lấy toạ độ"]]},
+    sdk:{t:"SdkInstaller",f:"src/SdkInstaller.cs",
+      fn:"Tải và cài platform-tools, emulator, system image, scrcpy-server vào thư mục <code>sdk\\</code>. Liệt kê các bản Android có thể dùng.",
+      how:["<code>InstallTools()</code>: FetchXml → <code>Parse</code> (chỉ kênh stable, host windows/x64) → <code>Best</code> (revision cao nhất) → <code>InstallZip</code> cho platform-tools và emulator; tải scrcpy-server nếu chưa có.",
+           "<code>InstallZip</code>: nếu file <code>.dsoft_rev</code> trong thư mục đích chứa đúng URL thì bỏ qua. Không thì tải vào <code>sdk\\.tmp\\pkg.zip</code> → kiểm checksum → giải nén → xoá đích cũ → chuyển vào → ghi marker.",
+           "<code>ListImages(tags, abi)</code>: gộp bản online (API ≥ 28, rev mới nhất mỗi API) với bản có sẵn trên đĩa, đánh dấu <code>Installed</code> nếu có <code>system.img</code>.",
+           "<code>InstallImage</code> / <code>DeleteImage</code>: cài/xoá một system image, dọn thư mục cha rỗng.",
+           "Hằng số <code>ScrcpyVersion = \"2.7\"</code> và <code>ScrcpyFile(sdk)</code> được ConnectInput dùng để tìm jar."],
+      io:[["←","main","InstallTools, InstallAll, LoadImages, InstallSelectedImage, DeleteSelectedImage (đều chạy trong Bg)"],
+          ["→","net","tải XML + zip"],
+          ["→","util","Log.I báo tiến độ, FileUtil.DeleteDir"],
+          ["←","touch","ConnectInput lấy đường dẫn jar qua SdkInstaller.ScrcpyFile"]]},
+    main:{t:"MainForm",f:"src/MainForm.cs",
+      fn:"Form duy nhất của app. Tạo mọi đối tượng chính, nối event giữa chúng và hiển thị 5 trang: Tổng quan, Bản Android, Cấu hình, Map phím, Auto click.",
+      how:["Constructor: tạo Settings, HostInfo, EmulatorController, TouchService, KeyMapper; gắn event <code>Log.Line</code>, <code>emu.Booted</code>, <code>emu.Stopped</code>, <code>MacroRunner.Changed</code>, timer 1,5s.",
+           "<code>Bg(tên, việc)</code>: chạy việc nặng trên Task, ghi log ✔/✖, xong gọi <code>UI(RefreshAll)</code>.",
+           "<code>UI(action)</code>: chuyển về UI thread bằng BeginInvoke khi gọi từ thread khác.",
+           "<code>uiOp</code> (0 rảnh, 1 đang bật, 2 đang dừng) + <code>androidReady</code> quyết định hiện nút Chạy hay Dừng trong <code>RefreshRuntime</code>.",
+           "<code>RefreshChecks</code>: checklist WHPX, tools, scrcpy, image, ổ đĩa; mỗi dòng có nút sửa lỗi.",
+           "<code>ConnectInput()</code>: khi Android boot xong, dựng lớp chạm (scrcpy hoặc adb input) và gán vào <code>touch.Inj</code>.",
+           "<code>InstallApk</code>: <code>adb install -r -g</code> (từ nút hoặc kéo thả)."],
+      io:[["→","emu","Start(cold), Stop, WipeAvd, DeleteAvd, MoveData, AccelCheck"],
+          ["←","emu","event Booted → ConnectInput; event Stopped → androidReady=false"],
+          ["→","touch","ConnectInput: Scr.Attach(adb), tạo ScrcpyTouch/AdbTouch, gán Inj"],
+          ["→","key","Load(text), Install(), Enabled, Dispose()"],
+          ["←","key","callback ToggleMacro(tên) khi nhấn phím macro"],
+          ["→","macro","Macro.Parse, MacroRunner.Start/Stop/StopAll"],
+          ["←","macro","event Changed → làm mới danh sách (dấu ▶)"],
+          ["→","sdk","tải tools/image, liệt kê bản Android"],
+          ["→","host","Detect(), ApplyRecommended(S)"],
+          ["→","picker","mở form lấy toạ độ, nhận chuỗi toạ độ chèn vào editor"],
+          ["→","adb","install APK"],
+          ["←","util","Log.Line đổ vào khung log; Settings lưu cấu hình"]]},
+    key:{t:"KeyMapper",f:"src/KeyMapper.cs",
+      fn:"Đổi phím bàn phím thành chạm trên Android: tap, joystick WASD, bật/tắt macro, bật/tắt toàn bộ map.",
+      how:["<code>Load(text)</code>: parse keymap thành các <code>Bind</code> (mỗi bind 1 id chạm từ 10), lập bảng <code>byVk</code>. Gửi sự kiện -1 để nhả mọi chạm cũ.",
+           "<code>Install()</code>: <code>SetWindowsHookEx(13)</code> — hook bàn phím mức thấp toàn hệ thống.",
+           "<code>HookProc</code>: bỏ phím do phần mềm khác bơm; phím nhấn chỉ xử lý khi đang bật và <code>EmuForeground()</code> (tiến trình cửa sổ trước mặt tên <code>qemu-system*</code> hoặc <code>emulator</code>). Phím được xử lý thì bị nuốt (trả 1).",
+           "Phím nhả của phím đã nuốt luôn được xử lý kể cả khi đã alt-tab, để không kẹt chạm.",
+           "Đẩy (vk, down/up) vào <code>BlockingCollection</code>; thread <code>Worker</code> gọi <code>Handle</code> để hook trả về ngay.",
+           "<code>Handle</code>: bỏ auto-repeat; tap → down/up tại vị trí lệch ngẫu nhiên; joy → <code>Joy()</code> tính hướng từ 4 phím, kéo từ tâm tới tâm + hướng × bán kính (×0,9–1,0) qua 3 bước move."],
+      io:[["←","user","phím từ hook hệ thống"],
+          ["→","qemu","chỉ kiểm tra tên tiến trình của cửa sổ đang focus"],
+          ["→","touch","Ready, Jittered, Radius, Raw(down/move/up)"],
+          ["→","main","ToggleMacro(tên)"],
+          ["←","main","Load keymap, Install, Enabled (checkbox), Dispose khi đóng app"]]},
+    host:{t:"HostInfo",f:"src/HostInfo.cs",
+      fn:"Đọc phần cứng máy thật và đề xuất cấu hình máy ảo.",
+      how:["<code>Detect()</code>: WMI <code>Win32_Processor</code> (tên, số nhân), <code>Win32_ComputerSystem</code> (RAM, HypervisorPresent), <code>Win32_VideoController</code> (chọn GPU có VRAM lớn nhất).",
+           "<code>ApplyRecommended(S)</code>: nhân = min(Cores, Threads/2), kẹp trong 2..6; RAM ≥ 15000 MB → 4096, ≥ 7500 → 3072, còn lại 2048; GPU rời (nvidia/radeon/arc và VRAM ≥ 2000 MB) → 1600x900, không thì 1280x720; DPI 240; GPU host.",
+           "<code>ToString()</code>: chuỗi hiển thị ở thẻ \"Máy tính này\"."],
+      io:[["←","main","Detect lúc mở app; ApplyRecommended lần đầu chạy và khi bấm \"Đề xuất theo máy\""],
+          ["→","util","ghi vào Settings"]]},
+    emu:{t:"EmulatorController + Adb",f:"src/Emulator.cs",
+      fn:"Quản lý vòng đời máy ảo: tạo AVD, chạy, chờ boot, tự khởi động lại khi crash, dừng. Lớp <code>Adb</code> bọc lệnh adb theo serial.",
+      how:["<code>CreateAvd()</code>: tự ghi <code>config.ini</code> và <code>&lt;Tên&gt;.ini</code> (không cần avdmanager). Gọi lại mỗi lần Start nên đổi cấu hình là có hiệu lực, dữ liệu giữ nguyên.",
+           "<code>Start(cold)</code>: <code>adb start-server</code>, ghép tham số từ Settings, <code>Proc.Start(emulator.exe)</code> với biến môi trường ANDROID_SDK_ROOT/ANDROID_AVD_HOME; output ghi <code>logs\\emulator.log</code>.",
+           "<code>BootWatch</code> (thread riêng): sau 6s nâng ưu tiên qemu; poll <code>adb devices</code> + <code>getprop sys.boot_completed</code> tới 400s, cần OK 2 lần cách 3s → <code>IsBooted=true</code>, bắn <code>Booted</code>.",
+           "<code>OnExit</code>: mã thoát ≠ 0, không phải do bấm Dừng, AutoRestart bật, chưa quá 3 lần → cold boot lại. Không thì bắn <code>Stopped</code>.",
+           "<code>Stop()</code>: <code>adb emu kill</code>, chờ 25s, quá thì <code>taskkill /T /F</code>.",
+           "Quản lý dữ liệu: <code>WipeAvd</code> (xoá userdata + đặt cờ <code>.dsoft_wipe</code>), <code>DeleteAvd</code>, <code>MoveData</code> (chuyển sdk + avd sang ổ khác, sửa <code>path=</code> trong .ini)."],
+      io:[["←","main","Start/Stop/Wipe/Delete/MoveData, đọc Running, IsBooted, AvdName..."],
+          ["→","main","event Booted, Stopped"],
+          ["→","qemu","Proc.Start emulator.exe, theo dõi Exited"],
+          ["→","adb","start-server, devices, getprop, emu kill"],
+          ["→","util","Settings, Proc, FileUtil, Log"],
+          ["→","touch","NewAdb() cấp đối tượng Adb cho ConnectInput"]]},
+    picker:{t:"PickerForm",f:"src/PickerForm.cs",
+      fn:"Cửa sổ chụp màn hình Android để lấy toạ độ chuẩn hoá cho keymap/macro.",
+      how:["<code>Grab()</code>: trên Task gọi <code>adb exec-out screencap -p</code>, hiện ảnh PNG (F5 hoặc nút để chụp lại).",
+           "<code>Norm()</code>: đổi vị trí chuột trên PictureBox (chế độ Zoom, có viền đen) về 0..1.",
+           "Click → <code>x y</code>; kéo xa hơn 0,02 → <code>x1 y1 x2 y2</code> (dùng cho swipe).",
+           "Chuỗi được copy vào clipboard và chèn vào editor đang mở."],
+      io:[["←","main","Pick(keyEdit) hoặc Pick(macroEdit)"],
+          ["←","user","click/kéo trên ảnh"],
+          ["→","adb","screencap"],
+          ["→","main","callback insert(chuỗi toạ độ)"]]},
+    macro:{t:"MacroRunner + Macro",f:"src/Macro.cs",
+      fn:"Chạy kịch bản auto click lặp lại, thời gian và vị trí ngẫu nhiên kiểu người thật.",
+      how:["<code>Macro.Parse</code>: đọc lệnh <code>loop, tap, dtap, hold, swipe, wait, break</code>; báo lỗi theo dòng.",
+           "<code>MacroRunner.Start</code>: mỗi macro 1 thread + 1 CancellationTokenSource + 1 id chạm riêng (từ 2001). Trùng tên đang chạy thì bỏ qua.",
+           "Mỗi vòng: chờ <code>touch.Ready</code> → chạy từng bước; <code>wait</code> có 3% chần chừ thêm 150–600ms; cuối vòng <code>pct%</code> nghỉ dài.",
+           "<code>Stop/StopAll</code>: Cancel token → Wait ném OperationCanceledException → finally của Tap/Hold/Swipe gửi up."],
+      io:[["←","main","ToggleMacro (nút ▶ hoặc phím macro qua KeyMapper)"],
+          ["→","touch","Tap, Hold, Swipe, Ready, Wait"],
+          ["→","main","event Changed"]]},
+    util:{t:"Util.cs",f:"src/Util.cs",
+      fn:"Hạ tầng dùng chung cho mọi lớp.",
+      how:["<code>Log</code>: <code>I(msg)</code> ghi <code>logs\\app.log</code> (xoá khi &gt; 4 MB lúc khởi động) và bắn event <code>Line</code> cho UI.",
+           "<code>Settings</code>: dictionary key=value đọc/ghi <code>settings.ini</code>, không phân biệt hoa thường; bool lưu 1/0.",
+           "<code>FileUtil</code>: <code>DeleteDir</code> (gỡ ReadOnly trước), <code>MoveDir</code> (cùng ổ thì đổi tên, khác ổ thì copy có %), <code>DirSize</code>, <code>SameDrive</code>.",
+           "<code>Proc.Run</code>: chạy exe ẩn, chờ xong, trả stdout+stderr (timeout thì kill). <code>RunBytes</code>: lấy stdout nhị phân. <code>Start</code>: chạy nền, mỗi dòng gọi callback, tuỳ chọn stdin. <code>KillTree</code>: taskkill /T /F."],
+      io:[["←","main","Log, Settings"],["←","emu","Proc, Settings, FileUtil, Log"],["←","sdk","Log, FileUtil"],
+          ["←","touch","Proc.Start (scrcpy, adb shell), Log"],["←","key","Log"],["←","macro","Log"],["←","host","Settings"]]},
+    touch:{t:"TouchService",f:"src/Input.cs",
+      fn:"Tầng chạm trung gian. Bên trên (KeyMapper, Macro) chỉ dùng toạ độ 0..1; bên dưới đổi thành pixel và gửi vào Android.",
+      how:["<code>Screen</code>: thread poll mỗi 3s <code>wm size</code> + hướng xoay; xoay ngang thì đảo W/H.",
+           "<code>ITouch</code>: <code>Send(action, id, nx, ny)</code>, action 0 down, 1 up, 2 move.",
+           "<code>ScrcpyTouch.Start</code>: push jar, <code>adb forward tcp:PORT localabstract:scrcpy_ID</code> (PORT 27183–27382), chạy server qua <code>app_process</code>, kết nối TCP tới khi nhận dummy byte; thread <code>Drain</code> phát hiện mất kết nối.",
+           "<code>ScrcpyTouch.Send</code>: pixel theo W/H làm tròn bội số 8, gói 32 byte big-endian, ghi socket có lock.",
+           "<code>AdbTouch</code> (dự phòng): giữ 1 phiên <code>adb shell</code>; khi up gửi <code>input tap</code> hoặc <code>input swipe</code> (nếu di chuyển &gt; 8px hoặc giữ &gt; 350ms). Không đa điểm thật.",
+           "<code>Human</code>: lệch Gauss trong bán kính, nhấn log-normal 45–180ms, chờ tam giác. <code>Swipe</code>: Bezier bậc 2 cong ngẫu nhiên + ease in-out."],
+      io:[["←","key","Raw, Jittered, Radius, Ready"],
+          ["←","macro","Tap, Hold, Swipe, Wait"],
+          ["←","main","ConnectInput gán Inj, Scr.Attach"],
+          ["→","adb","push, forward, shell app_process, wm size/dumpsys"],
+          ["→","scrcpy","TCP 127.0.0.1:PORT, gói chạm 32 byte"],
+          ["→","adbd","AdbTouch: input tap/swipe qua adb shell"]]},
+    qemu:{t:"emulator.exe → qemu-system-x86_64",f:"sdk\\emulator\\ (của Google)",
+      fn:"Trình giả lập chính chủ. Chạy Android x86_64 với tăng tốc WHPX và GPU host. Có cửa sổ riêng.",
+      how:["Được EmulatorController khởi chạy với <code>-avd -port 5554 -gpu -cores -memory -netdelay none -netspeed full</code> và các tuỳ chọn khác.",
+           "emulator.exe sinh tiến trình con <code>qemu-system-*</code>; BootWatch nâng ưu tiên CPU tiến trình này.",
+           "<code>emulator -accel-check</code> dùng để kiểm tra WHPX ở trang Tổng quan.",
+           "Khi thoát: Exited → OnExit (watchdog). Quick boot lưu snapshot khi tắt."],
+      io:[["←","emu","Proc.Start, đọc output, Exited"],
+          ["←","user","chuột trực tiếp trên cửa sổ"],
+          ["←","key","KeyMapper chỉ nhận phím khi cửa sổ này đang focus"],
+          ["→","android","chạy hệ điều hành khách"]]},
+    adb:{t:"adb.exe",f:"sdk\\platform-tools\\adb.exe",
+      fn:"Cầu nối Windows ↔ Android. Mọi lệnh đều chỉ định <code>-s emulator-5554</code>.",
+      how:["Server adb chạy nền (cổng 5037), được <code>adb start-server</code> bật trước khi chạy emulator.",
+           "Lệnh dùng trong app: <code>devices</code>, <code>shell getprop</code>, <code>emu kill</code>, <code>push</code>, <code>forward</code>, <code>install -r -g</code>, <code>exec-out screencap -p</code>, <code>shell wm size / dumpsys</code>.",
+           "<code>adb forward</code> mở cổng TCP trên Windows nối vào socket <code>localabstract:scrcpy_ID</code> trong Android."],
+      io:[["←","emu","start-server, devices, getprop, emu kill"],
+          ["←","touch","push, forward, shell app_process, poll màn hình"],
+          ["←","picker","screencap"],
+          ["←","main","install APK"],
+          ["→","adbd","giao thức adb"]]},
+    android:{t:"Hệ thống Android + game/app",f:"system image trong sdk\\system-images\\",
+      fn:"Hệ điều hành khách. Không biết có DsoftEmu; chỉ thấy các sự kiện chạm như ngón tay thật.",
+      how:["Báo <code>sys.boot_completed=1</code> khi boot xong — mốc để app bật input.",
+           "Nhận chạm từ scrcpy-server (đa điểm) hoặc từ lệnh <code>input tap/swipe</code> (AdbTouch).",
+           "Dữ liệu (app, tài khoản) nằm trong <code>avd\\&lt;Tên&gt;.avd\\userdata-qemu.img</code>."],
+      io:[["←","qemu","chạy bên trong máy ảo"],["←","scrcpy","bơm sự kiện chạm"],["←","adbd","input tap/swipe, getprop, wm size, cài APK"]]},
+    adbd:{t:"adbd",f:"trong Android",
+      fn:"Daemon adb phía Android, thực thi lệnh từ adb.exe.",
+      how:["Chạy lệnh shell, nhận file push, cài APK, trả ảnh screencap.",
+           "Khởi chạy scrcpy-server bằng <code>CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 2.7 ...</code>."],
+      io:[["←","adb","giao thức adb"],["→","scrcpy","khởi chạy app_process"],["→","android","lệnh shell, input"]]},
+    scrcpy:{t:"scrcpy-server v2.7",f:"/data/local/tmp/scrcpy-server.jar",
+      fn:"Server điều khiển của dự án scrcpy, chạy trong Android. App chỉ dùng kênh control để bơm chạm nhanh, đa điểm; không lấy video/âm thanh.",
+      how:["Tham số: <code>video=false audio=false control=true tunnel_forward=true cleanup=true power_off_on_close=false send_device_meta=false send_dummy_byte=true clipboard_autosync=false</code>.",
+           "Mở socket <code>localabstract:scrcpy_&lt;scid&gt;</code>; khi có kết nối gửi 1 dummy byte báo sẵn sàng.",
+           "Nhận gói 32 byte (type 2 = INJECT_TOUCH_EVENT) và bơm vào Android.",
+           "Output của server được log với tiền tố <code>[scrcpy]</code>. Khi đóng, ScrcpyTouch kill tiến trình và gỡ forward."],
+      io:[["←","touch","TCP qua adb forward"],["←","adbd","được khởi chạy"],["→","android","bơm chạm"]]}
+  };
+
+  var panel=document.getElementById('detail');
+  var rects=[].slice.call(document.querySelectorAll('rect[data-k]'));
+
+  function chip(k){return '<button type="button" class="chip" data-go="'+k+'">'+N[k].t+'</button>';}
+
+  function select(k){
+    var d=N[k]; if(!d) return;
+    var rel={}; rel[k]=1; d.io.forEach(function(r){rel[r[1]]=1;});
+    rects.forEach(function(r){
+      var rk=r.getAttribute('data-k');
+      r.classList.toggle('sel',rk===k);
+      r.classList.toggle('dim',!rel[rk]);
+    });
+    var fileHtml=d.f?(d.f.indexOf('src/')===0?'<a href="../'+d.f+'">'+d.f+'</a>':d.f):'';
+    var h='<h3>'+d.t+'</h3>'+(fileHtml?'<div class="file">'+fileHtml+'</div>':'')+
+      '<h4>Chức năng</h4><div>'+d.fn+'</div>'+
+      '<h4>Cách hoạt động</h4><ol>'+d.how.map(function(x){return '<li>'+x+'</li>';}).join('')+'</ol>'+
+      '<h4>Tương tác</h4><div class="tbl"><table>'+d.io.map(function(r){
+        return '<tr><td>'+(r[0]==='→'?'gọi/gửi tới →':'← nhận từ')+'</td><td>'+chip(r[1])+'</td><td>'+r[2]+'</td></tr>';
+      }).join('')+'</table></div>';
+    panel.innerHTML=h;
+  }
+
+  function clear(){
+    rects.forEach(function(r){r.classList.remove('sel','dim');});
+    panel.innerHTML='<div class="ph">Bấm vào một ô trong sơ đồ để xem chi tiết.</div>';
+  }
+
+  rects.forEach(function(r){
+    r.setAttribute('tabindex','0');
+    r.setAttribute('role','button');
+    r.setAttribute('aria-label',N[r.getAttribute('data-k')].t);
+    r.addEventListener('click',function(e){
+      e.stopPropagation();
+      if(r.classList.contains('sel')) clear(); else select(r.getAttribute('data-k'));
+    });
+    r.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();select(r.getAttribute('data-k'));}});
+  });
+  document.querySelector('.diagram svg').addEventListener('click',clear);
+  panel.addEventListener('click',function(e){
+    var g=e.target.getAttribute&&e.target.getAttribute('data-go');
+    if(g){select(g);document.querySelector('.diagram').scrollIntoView({behavior:'smooth',block:'start'});}
+  });
+})();
+</script>
+</body>
+</html>

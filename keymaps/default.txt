@@ -1,0 +1,27 @@
+# ===== Keymap mặc định =====
+# Toạ độ x y chuẩn hoá 0..1 (0 0 = góc trên trái, 1 1 = góc dưới phải).
+# r = bán kính lệch ngẫu nhiên, theo cạnh ngắn màn hình (0.012 ~ 9px ở 720p).
+# Dùng nút "Lấy toạ độ từ màn hình..." để click lấy x y chính xác.
+# Tên phím theo System.Windows.Forms.Keys: A..Z, D0..D9, Space, Enter, Escape, Tab,
+#   LShiftKey, LControlKey, F1..F12, Up/Down/Left/Right, NumPad0..9, OemTilde ...
+# Chỉ hoạt động khi cửa sổ giả lập đang được chọn (focus).
+#
+#   tap    <Phím> x y [r]                       giữ phím = giữ chạm
+#   joy    <Lên> <Trái> <Xuống> <Phải> cx cy bán_kính   joystick
+#   macro  <Phím> <tên_macro>                   bật/tắt macro trong thư mục macros
+#   toggle <Phím>                               bật/tắt toàn bộ map phím
+
+toggle F12
+
+joy W A S D  0.150 0.750 0.090
+
+tap Space    0.900 0.780 0.012     # nút nhảy / tấn công chính
+tap J        0.820 0.880
+tap K        0.880 0.620
+tap L        0.950 0.560
+tap Q        0.740 0.900
+tap E        0.680 0.780
+tap R        0.620 0.900
+tap Tab      0.050 0.060           # menu / bản đồ
+
+macro F9  sample

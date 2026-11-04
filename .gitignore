@@ -1,0 +1,32 @@
+# ===== Build output (build.bat) =====
+bin/
+obj/
+
+# ===== Package output (pack.bat) =====
+dist/
+*.zip
+
+# ===== Temp / test files =====
+__Temp/
+*.apk
+*.tmp
+*.log
+
+# ===== Runtime data (neu chay app ngoai bin/) =====
+avd/
+sdk/
+logs/
+settings.ini
+
+# ===== IDE / Editor =====
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+
+# ===== OS =====
+Thumbs.db
+Desktop.ini
+.DS_Store
