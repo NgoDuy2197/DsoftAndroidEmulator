@@ -1,4 +1,4 @@
-using System; // Kiểu cơ bản: Math, Random, IDisposable, DateTime...
+﻿using System; // Kiểu cơ bản: Math, Random, IDisposable, DateTime...
 using System.Collections.Generic; // Dictionary
 using System.Diagnostics; // Process (tiến trình adb/scrcpy-server)
 using System.IO; // IOException
@@ -27,6 +27,9 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 th.Start(); // Chạy thread
             }
         }
+
+        // Gỡ adb: thread poll vẫn chạy nhưng không gọi adb nữa (dùng khi tắt ADB)
+        public void Detach() { adb = null; }
 
         // Đọc kích thước và hướng xoay màn hình qua adb shell, cập nhật W/H/Rot
         public void Refresh()
@@ -93,7 +96,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             adb.Run("forward tcp:" + port + " localabstract:scrcpy_" + id, 5000); // Forward cổng local tới socket abstract scrcpy_<scid> trên máy
 
             // Tham số chạy server: chạy jar bằng app_process, đúng phiên bản và scid
-            string args = "-s " + adb.Serial + " shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server " +
+            string args = adb.Target + " shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server " +
                 SdkInstaller.ScrcpyVersion + " scid=" + id + // Phiên bản phải khớp jar; scid chọn socket
                 " log_level=info video=false audio=false control=true tunnel_forward=true cleanup=true" + // Tắt video/audio, chỉ bật điều khiển, dùng forward
                 " power_off_on_close=false send_device_meta=false send_dummy_byte=true clipboard_autosync=false"; // Gửi 1 byte giả khi sẵn sàng, không gửi metadata
@@ -191,7 +194,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         public AdbTouch(Adb adb, Screen scr)
         {
             this.scr = scr; // Lưu đối tượng màn hình
-            sh = Proc.Start(adb.Exe, "-s " + adb.Serial + " shell", null, null, true); // Khởi chạy "adb -s <serial> shell"
+            sh = Proc.Start(adb.Exe, adb.Target + " shell", null, null, true); // Khởi chạy "adb -s <serial> shell"
             Log.I("Input: adb shell input (dự phòng, chậm)"); // Ghi log phương thức đang dùng
         }
 

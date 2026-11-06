@@ -1,4 +1,4 @@
-﻿using System; // Kiểu cơ bản: Exception, Action, DateTime, StringComparison...
+using System; // Kiểu cơ bản: Exception, Action, DateTime, StringComparison...
 using System.Collections.Generic; // Dictionary dùng cho biến môi trường
 using System.Diagnostics; // Process, ProcessPriorityClass để chạy/quản lý tiến trình
 using System.IO; // Path, File, Directory, DriveInfo để thao tác file/thư mục
@@ -11,23 +11,27 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
     public class Adb
     {
         public readonly string Exe; // Đường dẫn tới adb.exe
-        public readonly string Serial; // Serial thiết bị, ví dụ "emulator-5554"
+        public readonly string Serial; // Serial thiết bị, ví dụ "emulator-5700"
+        public readonly int ServerPort; // Cổng adb server RIÊNG của app (mặc định 5038), tách khỏi server 5037 của scrcpy/tool khác
 
-        // Hàm khởi tạo: lưu đường dẫn adb và serial thiết bị
-        public Adb(string exe, string serial) { Exe = exe; Serial = serial; }
+        // Hàm khởi tạo: lưu đường dẫn adb, serial thiết bị và cổng adb server
+        public Adb(string exe, string serial, int serverPort) { Exe = exe; Serial = serial; ServerPort = serverPort; }
 
-        // Chạy "adb -s <serial> <args>" và trả về output dạng chuỗi, có timeout
-        public string Run(string args, int timeoutMs) { return Proc.Run(Exe, "-s " + Serial + " " + args, timeoutMs, null); }
+        // Phần đầu mọi lệnh: chọn server riêng + thiết bị, ví dụ "-P 5038 -s emulator-5700"
+        public string Target { get { return "-P " + ServerPort + " -s " + Serial; } }
+
+        // Chạy "adb -P <port> -s <serial> <args>" và trả về output dạng chuỗi, có timeout
+        public string Run(string args, int timeoutMs) { return Proc.Run(Exe, Target + " " + args, timeoutMs, null); }
         // Chạy một lệnh shell trên Android qua "adb shell <cmd>"
         public string Shell(string cmd, int timeoutMs) { return Run("shell " + cmd, timeoutMs); }
         // Chụp màn hình thiết bị (PNG thô) qua "adb exec-out screencap -p", timeout 15 giây
-        public byte[] Screencap() { return Proc.RunBytes(Exe, "-s " + Serial + " exec-out screencap -p", 15000); }
+        public byte[] Screencap() { return Proc.RunBytes(Exe, Target + " exec-out screencap -p", 15000); }
 
-        // Kiểm tra thiết bị có đang online trong "adb devices" không
+        // Kiểm tra thiết bị có đang online trong "adb devices" (của server riêng) không
         public bool Online()
         {
             // Tìm dòng "<serial>\tdevice" (trạng thái device = online, không phải offline)
-            return Proc.Run(Exe, "devices", 8000, null).Contains(Serial + "\tdevice");
+            return Proc.Run(Exe, "-P " + ServerPort + " devices", 8000, null).Contains(Serial + "\tdevice");
         }
 
         // Kiểm tra Android đã boot xong chưa
@@ -153,8 +157,11 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
 
         public volatile bool IsBooted; // true khi Android đã boot xong
         public DateTime StartedAt; // Thời điểm bắt đầu chạy emulator
-        public int Port { get { return S.GetInt("Port", 5554); } } // Cổng console của emulator (mặc định 5554)
-        public string Serial { get { return "emulator-" + Port; } } // Serial adb tương ứng, ví dụ "emulator-5554"
+        // Cổng console của emulator; cổng adb = Port + 1. Mặc định 5700: NGOÀI dải 5554-5585 mà adb server tự quét,
+        // nên adb/scrcpy khác trên máy (server 5037) không thấy emulator này
+        public int Port { get { return S.GetInt("Port", 5700); } }
+        public string Serial { get { return "emulator-" + Port; } } // Serial adb tương ứng, ví dụ "emulator-5700"
+        public int AdbServerPort { get { return S.GetInt("AdbServerPort", 5038); } } // Cổng adb server riêng của app
         public string EmulatorExe { get { return Path.Combine(SdkDir, "emulator", "emulator.exe"); } } // Đường dẫn emulator.exe
         public string AdbExe { get { return Path.Combine(SdkDir, "platform-tools", "adb.exe"); } } // Đường dẫn adb.exe
         public int Api { get { return S.GetInt("Api", 30); } } // Phiên bản API Android (mặc định 30 = Android 11)
@@ -165,7 +172,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         public bool Running { get { return proc != null && !proc.HasExited; } } // true nếu tiến trình emulator còn sống
         // AVD tồn tại khi có file config.ini trong thư mục <tên>.avd
         public bool AvdExists { get { return File.Exists(Path.Combine(AvdHome, AvdName + ".avd", "config.ini")); } }
-        public Adb NewAdb() { return new Adb(AdbExe, Serial); } // Tạo đối tượng Adb nhắm vào emulator này
+        public Adb NewAdb() { return new Adb(AdbExe, Serial, AdbServerPort); } // Tạo đối tượng Adb nhắm vào emulator này
 
         // Biến môi trường truyền cho emulator.exe để nó tìm thấy SDK và AVD
         public Dictionary<string, string> Env()
@@ -174,7 +181,8 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             {
                 { "ANDROID_SDK_ROOT", SdkDir }, // Thư mục SDK (tên biến kiểu cũ)
                 { "ANDROID_HOME", SdkDir }, // Thư mục SDK (tên biến kiểu mới)
-                { "ANDROID_AVD_HOME", AvdHome } // Thư mục chứa các AVD
+                { "ANDROID_AVD_HOME", AvdHome }, // Thư mục chứa các AVD
+                { "ANDROID_ADB_SERVER_PORT", AdbServerPort.ToString() } // Emulator báo danh / gọi adb qua server riêng, không đụng server 5037
             };
         }
 
@@ -205,7 +213,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             kv("hw.lcd.density", S.GetInt("Dpi", 240)); // Mật độ điểm ảnh (DPI)
             kv("hw.initialOrientation", w > h ? "landscape" : "portrait"); // Hướng màn hình: ngang nếu rộng > cao
             kv("hw.gpu.enabled", "yes"); // Bật tăng tốc GPU
-            kv("hw.gpu.mode", S.Get("Gpu", "host")); // Chế độ GPU (host = dùng card đồ hoạ thật)
+            kv("hw.gpu.mode", GpuMode); // Chế độ GPU (host = dùng card đồ hoạ thật)
             kv("hw.keyboard", "yes"); // Cho phép gõ bằng bàn phím máy tính
             kv("hw.mainKeys", "no"); // Không có phím cứng -> hiện thanh điều hướng
             kv("hw.audioInput", "no"); // Tắt micro
@@ -237,27 +245,153 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             return Proc.Run(EmulatorExe, "-accel-check", 30000, Env()); // Chạy "emulator -accel-check" và trả về kết quả
         }
 
+        // Các chế độ GPU mà emulator 37.x chấp nhận (emulator -help-gpu)
+        public static readonly string[] GpuModes = { "host", "auto", "swangle", "swiftshader", "software" };
+
+        // Chế độ GPU hợp lệ: giá trị cũ không còn hỗ trợ (angle_indirect, swiftshader_indirect...) -> auto, giống emulator tự xử lý
+        public string GpuMode
+        {
+            get
+            {
+                string g = S.Get("Gpu", "host").Trim(); // Giá trị trong settings.ini
+                return Array.IndexOf(GpuModes, g) >= 0 ? g : "auto"; // Không nằm trong danh sách -> auto
+            }
+        }
+
+        // Tên snapshot của nút "Lưu trạng thái" (tách riêng khỏi default_boot của Quick Boot)
+        public const string SaveName = "dsoft_save";
+        // Đã có bản lưu cho máy ảo đang chọn chưa (thư mục avd\<tên>.avd\snapshots\dsoft_save)
+        public bool HasSave { get { return Directory.Exists(Path.Combine(AvdHome, AvdName + ".avd", "snapshots", SaveName)); } }
+
+        // Gửi lệnh tới cổng console của emulator qua "adb emu <lệnh>"
+        string EmuConsole(string cmd, int timeoutMs) { return Proc.Run(AdbExe, NewAdb().Target + " emu " + cmd, timeoutMs, null); }
+
+        /// <summary>Lưu trạng thái đang chạy vào snapshot dsoft_save (Android đứng hình ~10-20s).
+        /// KHÔNG ghi đè default_boot: thử trên máy này thì emulator crash và hỏng điểm Quick Boot.</summary>
+        public void SaveState()
+        {
+            if (!Running) throw new Exception("Giả lập chưa chạy."); // Phải đang chạy mới lưu được
+            string r = EmuConsole("avd snapshot save " + SaveName, 180000); // Lưu snapshot, chờ tối đa 3 phút
+            if (!r.Contains("OK")) throw new Exception("Lưu thất bại: " + r.Trim()); // Console trả "OK" khi thành công
+            S.Set("SaveAdbKilled", AdbKilled); S.Save(); // Nhớ bản lưu được tạo lúc ADB tắt hay bật
+        }
+
+        // ---------- ADB trong Android (game có thể phát hiện USB debugging) ----------
+        // Người dùng cho phép app dùng ADB không (mặc định TẮT)
+        public bool AdbOn { get { return S.GetBool("AdbOn", false); } }
+
+        // ADB trong trạng thái Android hiện tại đã bị tắt chưa. Quick Boot giữ nguyên trạng thái này; cold boot bật lại ADB.
+        public bool AdbKilled
+        {
+            get { return S.GetBool("AdbKilled", false); }
+            set { S.Set("AdbKilled", value); S.Save(); }
+        }
+
+        /// <summary>Tắt ADB trong Android: đặt cờ "USB debugging" về 0 -> Android dừng adbd ngay.
+        /// Cờ adb_enabled phải được đặt CUỐI và phải đổi giá trị (1 rồi 0), nếu không adbd không dừng.
+        /// Sau đó chỉ cold boot mới bật lại được ADB.</summary>
+        public void KillAdb()
+        {
+            var adb = NewAdb(); // adb nhắm vào emulator
+            // Tắt Developer options (chạy nền vì có thể làm adbd dừng sớm), rồi đổi cờ adb_enabled 1 -> 0
+            adb.Shell("\"settings put global development_settings_enabled 0 >/dev/null 2>&1 & settings put global adb_enabled 1; settings put global adb_enabled 0\"", 15000);
+            for (int i = 0; i < 20 && adb.Online(); i++) Thread.Sleep(500); // Chờ thiết bị rời khỏi adb (tối đa 10s)
+            AdbKilled = true; // Ghi nhớ
+            Log.I(adb.Online() ? "⚠ ADB vẫn còn kết nối sau khi tắt." : "✔ Đã tắt ADB trong Android."); // Báo kết quả
+        }
+
+        /// <summary>Tắt Wi-Fi ảo rồi bật lại trong Android, chờ có Internet trở lại (tối đa ~60s).</summary>
+        public bool RefreshNetwork()
+        {
+            var adb = NewAdb(); // adb nhắm vào emulator
+            adb.Shell("cmd wifi set-wifi-enabled disabled", 15000); // Tắt Wi-Fi ảo
+            Thread.Sleep(1500); // Chờ Android ngắt hẳn
+            adb.Shell("cmd wifi set-wifi-enabled enabled", 15000); // Bật lại
+            string host = S.Get("PingHost", "8.8.8.8"); // Địa chỉ dùng để thử Internet
+            for (int i = 0; i < 30; i++) // Thử tối đa 30 lần
+            {
+                if (adb.Shell("ping -c1 -W1 " + host, 5000).Contains("1 received")) return true; // Có phản hồi -> có mạng
+                Thread.Sleep(1000); // Chưa có, chờ rồi thử lại
+            }
+            return false; // Hết lượt vẫn chưa có mạng
+        }
+
+        /// <summary>Tắt emulator (Quick Boot tự lưu khi tắt) rồi bật lại. fromSave=true: bật từ bản lưu dsoft_save.</summary>
+        public void Restart(bool fromSave)
+        {
+            if (fromSave && !HasSave) throw new Exception("Chưa có bản lưu - bấm 'Lưu trạng thái' trước."); // Không có bản lưu thì báo
+            if (Running) Stop(); // Đang chạy thì tắt mềm trước (lưu default_boot nếu bật Quick Boot)
+            Start(false, fromSave ? SaveName : null); // Bật lại: Quick Boot hoặc từ bản lưu
+        }
+
+        // Xoá/đổi tên emulator.log khi quá 4 MB để file không phình mãi qua nhiều phiên
+        static void RotateLog(string file)
+        {
+            try
+            {
+                if (!File.Exists(file) || new FileInfo(file).Length < 4 * 1024 * 1024) return; // Còn nhỏ thì giữ
+                string old = Path.ChangeExtension(file, ".old.log"); // emulator.old.log
+                if (File.Exists(old)) File.Delete(old); // Xoá bản cũ hơn
+                File.Move(file, old); // Giữ lại 1 bản để xem khi cần
+            }
+            catch { } // Lỗi (file đang mở...) thì bỏ qua
+        }
+
+        // Giới hạn số dòng lỗi của emulator đẩy lên ô log của app: lỗi GPU có lúc ra hàng trăm dòng/phút
+        readonly object errLock = new object(); // Khoá vì stdout và stderr đọc ở 2 luồng
+        DateTime errWindow = DateTime.MinValue; // Mốc bắt đầu cửa sổ 60 giây hiện tại
+        int errShown, errHidden; // Số dòng đã hiện / đã ẩn trong cửa sổ hiện tại
+
+        // Đẩy dòng lỗi lên ô log, tối đa 10 dòng mỗi 60 giây; phần dư chỉ đếm rồi báo tổng
+        void ShowEmuError(string line)
+        {
+            string summary = null; // Dòng tóm tắt số dòng bị ẩn (nếu có)
+            bool show; // Có hiện dòng này không
+            lock (errLock)
+            {
+                if ((DateTime.Now - errWindow).TotalSeconds >= 60) // Sang cửa sổ mới
+                {
+                    if (errHidden > 0) summary = "[emu] (ẩn " + errHidden + " dòng lỗi lặp lại trong 60s - xem logs\\emulator.log)"; // Báo số dòng đã ẩn
+                    errWindow = DateTime.Now; errShown = 0; errHidden = 0; // Đặt lại bộ đếm
+                }
+                show = errShown < 10; // Còn hạn mức thì hiện
+                if (show) errShown++; else errHidden++; // Cập nhật bộ đếm
+            }
+            if (summary != null) Log.I(summary); // Ghi tóm tắt ngoài khoá
+            if (show) Log.I("[emu] " + line); // Hiện dòng lỗi
+        }
+
         // Khởi động emulator; cold=true thì bỏ qua snapshot (khởi động nguội)
-        public void Start(bool cold)
+        public void Start(bool cold) { Start(cold, null); }
+
+        // snapshot != null: nạp snapshot có tên đó và không lưu đè khi tắt (giữ nguyên bản lưu)
+        public void Start(bool cold, string snapshot)
         {
             if (Running) { Log.I("Giả lập đang chạy."); return; } // Đang chạy rồi thì thoát
             if (!File.Exists(EmulatorExe)) throw new Exception("Chưa có emulator.exe, bấm 'Tải SDK + image' trước."); // Chưa tải SDK
             CreateAvd(); // luôn ghi lại config.ini theo cấu hình hiện tại (không đụng dữ liệu)
 
-            Proc.Run(AdbExe, "start-server", 20000, null); // Khởi động adb server trước
+            Proc.Run(AdbExe, "-P " + AdbServerPort + " start-server", 20000, null); // Khởi động adb server riêng trước
 
             var a = new StringBuilder(); // Bộ đệm tham số dòng lệnh cho emulator.exe
             a.Append("-avd ").Append(AvdName) // -avd: tên máy ảo cần chạy
-             .Append(" -port ").Append(Port) // -port: cổng console (adb serial = emulator-<port>)
-             .Append(" -gpu ").Append(S.Get("Gpu", "host")) // -gpu: chế độ render đồ hoạ
+             .Append(" -ports ").Append(Port).Append(',').Append(Port + 1) // -ports: cổng console + cổng adb (ngoài dải adb tự quét)
+             .Append(" -gpu ").Append(GpuMode) // -gpu: chế độ render đồ hoạ (đã lọc giá trị không hợp lệ)
              .Append(" -cores ").Append(S.GetInt("Cores", 4)) // -cores: số nhân CPU ảo
              .Append(" -memory ").Append(S.GetInt("RamMB", 4096)) // -memory: RAM (MB)
              .Append(" -netdelay none -netspeed full"); // -netdelay none: không giả lập độ trễ mạng; -netspeed full: tốc độ mạng tối đa
+            string dns = S.Get("Dns", "").Trim(); // DNS cố định do người dùng chọn ("" = theo máy thật)
+            if (dns.Length > 0) a.Append(" -dns-server ").Append(dns); // -dns-server: DNS cho Android
             if (!S.GetBool("BootAnim", true)) a.Append(" -no-boot-anim"); // -no-boot-anim: tắt hoạt ảnh khởi động cho boot nhanh hơn
             string wipe = Path.Combine(AvdHome, AvdName + ".avd", WipeMarker); // Đường dẫn file đánh dấu xoá trắng
             bool wiping = File.Exists(wipe); // Có yêu cầu xoá trắng đang chờ không
-            if (wiping) { a.Append(" -wipe-data"); cold = true; } // -wipe-data: xoá dữ liệu người dùng, buộc cold boot
-            if (!S.GetBool("QuickBoot", true)) a.Append(" -no-snapshot"); // -no-snapshot: không nạp và không lưu snapshot
+            if (wiping) { a.Append(" -wipe-data"); cold = true; snapshot = null; } // -wipe-data: xoá dữ liệu người dùng, buộc cold boot
+            // Muốn dùng ADB mà bản Quick Boot đang tắt ADB -> chỉ cold boot mới bật lại được
+            if (AdbOn && AdbKilled && snapshot == null && !cold) { cold = true; Log.I("ADB đang tắt trong trạng thái đã lưu -> khởi động nguội để bật lại ADB."); }
+            if (snapshot != null) AdbKilled = S.GetBool("SaveAdbKilled", false); // Bản lưu mang theo trạng thái ADB lúc lưu
+            Interlocked.Exchange(ref snapLoadTicks, 0); snapFailed = false; // Xoá dấu hiệu nạp snapshot của lần trước
+            if (snapshot != null) a.Append(" -snapshot ").Append(snapshot).Append(" -no-snapshot-save"); // Nạp bản lưu, tắt thì không ghi đè nó
+            else if (!S.GetBool("QuickBoot", true)) a.Append(" -no-snapshot"); // -no-snapshot: không nạp và không lưu snapshot
             else if (cold) a.Append(" -no-snapshot-load"); // -no-snapshot-load: không nạp snapshot (vẫn lưu khi tắt)
             if (S.GetBool("NoAudio", false)) a.Append(" -no-audio"); // -no-audio: tắt âm thanh
             if (S.GetBool("DisableVulkan", true)) a.Append(" -feature -Vulkan"); // -feature -Vulkan: tắt tính năng Vulkan (tránh lỗi driver)
@@ -265,16 +399,23 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             if (extra.Length > 0) a.Append(' ').Append(extra); // Nối thêm nếu có
 
             string logFile = Path.Combine(baseDir, "logs", "emulator.log"); // File ghi log đầu ra của emulator
+            RotateLog(logFile); // Quá 4 MB thì đổi tên sang emulator.old.log
             var logLock = new object(); // Khoá đồng bộ khi ghi file log từ nhiều luồng
+            StreamWriter logW = null; // Giữ file mở suốt phiên thay vì mở/đóng mỗi dòng
+            try { logW = new StreamWriter(logFile, true, new UTF8Encoding(false)) { AutoFlush = true }; } catch { } // Không mở được thì bỏ qua ghi file
             Log.I("emulator " + a); // Ghi log dòng lệnh sẽ chạy
             stopping = false; // Xoá cờ dừng chủ động
             // Chạy emulator.exe với tham số và biến môi trường, xử lý từng dòng output
             proc = Proc.Start(EmulatorExe, a.ToString(), Env(), line =>
             {
-                lock (logLock) { try { File.AppendAllText(logFile, line + Environment.NewLine); } catch { } } // Ghi dòng vào emulator.log, bỏ qua lỗi
+                lock (logLock) { try { if (logW != null) logW.WriteLine(line); } catch { } } // Ghi dòng vào emulator.log, bỏ qua lỗi
+                // Dấu hiệu khôi phục trạng thái: dùng để biết Android sẵn sàng khi ADB tắt (không hỏi được qua adb)
+                if (line.Contains("Successfully loaded snapshot")) Interlocked.Exchange(ref snapLoadTicks, DateTime.Now.Ticks);
+                else if (line.Contains("Failed to load snapshot")) snapFailed = true; // Nạp lỗi -> emulator chuyển sang cold boot (ADB bật lại)
                 string u = line.ToUpperInvariant(); // Chuyển chữ hoa để so khớp không phân biệt hoa thường
-                if (u.Contains("ERROR") || u.Contains("FATAL") || u.Contains("PANIC")) Log.I("[emu] " + line); // Chỉ đẩy dòng lỗi lên log giao diện
+                if (u.Contains("ERROR") || u.Contains("FATAL") || u.Contains("PANIC")) ShowEmuError(line); // Chỉ đẩy dòng lỗi lên log giao diện (có giới hạn)
             }, false);
+            proc.Exited += (s, e) => { lock (logLock) { try { if (logW != null) logW.Dispose(); } catch { } logW = null; } }; // Đóng file log khi emulator thoát
             proc.Exited += OnExit; // Đăng ký xử lý khi emulator thoát
             if (wiping) File.Delete(wipe); // Đã thêm -wipe-data thì xoá file đánh dấu
             IsBooted = false; // Chưa boot xong
@@ -311,9 +452,23 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 if (adb.Booted() && Sleep(3000) && adb.Booted()) // Kiểm tra 2 lần cách nhau 3 giây
                 {
                     autoRestarts = 0; // Boot thành công -> đặt lại bộ đếm tự khởi động lại
-                    IsBooted = true; // Đánh dấu đã boot
+                    AdbKilled = false; // ADB đang chạy
                     Log.I("✔ Android đã boot xong sau " + (int)(DateTime.Now - t0).TotalSeconds + "s"); // Ghi log thời gian boot
+                    if (!AdbOn) KillAdb(); // Người dùng không cho dùng ADB -> tắt ngay
+                    IsBooted = true; // Đánh dấu đã boot
                     var h = Booted; // Sao chép delegate để tránh race khi gọi
+                    if (h != null) h(); // Phát sự kiện Booted
+                    return; // Kết thúc luồng
+                }
+                // ADB tắt sẵn trong trạng thái được khôi phục: nạp snapshot xong + 10 giây mà vẫn không có adb -> coi như sẵn sàng
+                long st = Interlocked.Read(ref snapLoadTicks); // Thời điểm nạp snapshot xong (0 = chưa thấy)
+                if (st != 0 && !snapFailed && (DateTime.Now - new DateTime(st)).TotalSeconds > 10 && !adb.Online())
+                {
+                    autoRestarts = 0; // Coi như khởi động thành công
+                    AdbKilled = true; // ADB đang tắt
+                    IsBooted = true; // Đánh dấu đã sẵn sàng
+                    Log.I("✔ Android đã sẵn sàng (khôi phục trạng thái, ADB đang tắt)"); // Ghi log
+                    var h = Booted; // Sao chép delegate
                     if (h != null) h(); // Phát sự kiện Booted
                     return; // Kết thúc luồng
                 }
@@ -321,6 +476,9 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             }
             if (!p.HasExited) Log.I("⚠ Quá thời gian chờ boot. Xem logs\\emulator.log"); // Hết giờ mà emulator vẫn chạy -> cảnh báo
         }
+
+        long snapLoadTicks; // Thời điểm emulator in "Successfully loaded snapshot" (ticks, 0 = chưa thấy)
+        volatile bool snapFailed; // Emulator báo nạp snapshot lỗi
 
         // Ngủ ms mili-giây rồi trả về true (để dùng được trong biểu thức &&)
         static bool Sleep(int ms) { Thread.Sleep(ms); return true; }
@@ -350,7 +508,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         {
             stopping = true; // Đánh dấu dừng chủ động để OnExit không tự khởi động lại
             var p = proc; // Giữ tham chiếu tiến trình hiện tại
-            Proc.Run(AdbExe, "-s " + Serial + " emu kill", 10000, null); // Tắt giả lập qua cổng console của emulator
+            EmuConsole("kill", 10000); // Tắt giả lập qua cổng console của emulator
             if (p != null && !p.HasExited && !p.WaitForExit(25000)) // Chờ tối đa 25 giây cho tiến trình tự thoát
             {
                 Log.I("Emulator không tự tắt, kill cưỡng bức."); // Ghi log

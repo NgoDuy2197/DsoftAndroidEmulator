@@ -58,6 +58,20 @@ namespace DsoftEmu
         readonly Label sideStatus = new Label { AutoSize = false, Width = 200, Height = 46, ForeColor = Color.Silver, Padding = new Padding(18, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft };
         readonly Timer timer = new Timer { Interval = 1500 };  // Bộ đếm giờ làm mới trạng thái mỗi 1,5 giây
 
+        // ---------- thanh bên: trạng thái map phím, số liệu mạng/FPS, thao tác nhanh ----------
+        // Nhãn trạng thái map phím (xanh = bật, xám = tắt)
+        readonly Label mapLbl = new Label { AutoSize = false, Width = 200, Height = 24, Padding = new Padding(18, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI Semibold", 9.5f) };
+        // Nhãn số liệu: tốc độ mạng, ping, FPS (3 dòng)
+        readonly Label statsLbl = new Label { AutoSize = false, Width = 200, Height = 66, Padding = new Padding(18, 2, 0, 0), ForeColor = Color.FromArgb(200, 204, 215), Font = new Font("Consolas", 9f) };
+        readonly StatsPoller stats = new StatsPoller();  // Bộ đọc số liệu qua adb
+        volatile bool polling;  // Đang đọc số liệu (tránh chạy chồng)
+        DateTime lastPoll = DateTime.MinValue;  // Lần đọc số liệu gần nhất
+        Button bNet, bSave, bRestart, bLoad, bAdb;  // Nút thao tác nhanh ở thanh bên
+        bool syncingMap;  // Đang đồng bộ ô tick map phím từ code (không hỏi bật ADB)
+        // App được dùng ADB ngay lúc này: người dùng cho phép và ADB trong Android chưa bị tắt
+        bool AdbReady { get { return emu.AdbOn && !emu.AdbKilled; } }
+        volatile bool busy;  // Đang làm một thao tác nhanh (lưu / làm mới mạng / khởi động lại)
+
         // tổng quan
         readonly Label lCurImg = new Label { AutoSize = true, Font = FBig, ForeColor = CText };  // Tên bản Android đang chọn (chữ lớn)
         readonly Label lCurSub = new Label { AutoSize = true, ForeColor = CMuted, Margin = new Padding(3, 0, 3, 8) };  // Dòng mô tả cấu hình máy ảo
@@ -68,8 +82,10 @@ namespace DsoftEmu
 
         // cấu hình
         NumericUpDown nCores, nRam, nW, nH, nDpi;  // Ô số: nhân CPU, RAM, rộng, cao, DPI
-        ComboBox cGpu;  // Ô chọn chế độ GPU
-        CheckBox kQuick, kNoAudio, kNoVulkan, kRestart, kPrio, kBootAnim;  // Các ô tick tuỳ chọn
+        ComboBox cGpu, cDns;  // Ô chọn chế độ GPU, DNS
+        CheckBox kQuick, kNoAudio, kNoVulkan, kRestart, kPrio, kBootAnim, kStats;  // Các ô tick tuỳ chọn
+        const string DnsAuto = "Theo máy";  // Chữ hiển thị khi dùng DNS của Windows
+        static string DnsLabel(string v) { return string.IsNullOrEmpty(v) ? DnsAuto : v; }  // Giá trị lưu -> chữ hiển thị
         TextBox tExtra;  // Tham số dòng lệnh thêm cho emulator
 
         // bản Android
@@ -128,13 +144,18 @@ namespace DsoftEmu
                 logBox.AppendText(s + "\r\n");  // Thêm dòng log mới kèm xuống dòng
             });
             MacroRunner.Changed += () => UI(RefreshMacroList);  // Danh sách macro đang chạy thay đổi -> vẽ lại danh sách
-            emu.Booted += () => Task.Run(() => ConnectInput());  // Android boot xong -> kết nối input ở luồng nền
+            // Android boot xong -> đánh dấu sẵn sàng; chỉ kết nối input khi được dùng ADB
+            emu.Booted += () => { androidReady = true; if (AdbReady) Task.Run(() => ConnectInput()); UI(RefreshAll); };
             emu.Stopped += () => { androidReady = false; UI(RefreshAll); };  // Giả lập tắt -> xoá cờ sẵn sàng, làm mới giao diện
             timer.Tick += (s, e) => RefreshRuntime();  // Mỗi nhịp timer cập nhật trạng thái chạy
 
             DragEnter += (s, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };  // Kéo file vào: chấp nhận nếu dữ liệu là file
             // Thả file: cài từng file có đuôi .apk
-            DragDrop += (s, e) => { foreach (string f in (string[])e.Data.GetData(DataFormats.FileDrop)) if (f.EndsWith(".apk", StringComparison.OrdinalIgnoreCase)) InstallApk(f); };
+            DragDrop += (s, e) =>
+            {
+                var apks = ((string[])e.Data.GetData(DataFormats.FileDrop)).Where(f => f.EndsWith(".apk", StringComparison.OrdinalIgnoreCase)).ToList();  // Chỉ lấy file .apk
+                if (apks.Count > 0 && RequireAdb("Cài APK")) foreach (var f in apks) InstallApk(f);  // Cài khi được dùng ADB
+            };
 
             Load += (s, e) => OnLoaded();  // Form hiện xong thì khởi động phần còn lại
             FormClosing += OnClosing;  // Xử lý khi đóng form
@@ -153,7 +174,35 @@ namespace DsoftEmu
             foreach (var b in nav) side.Controls.Add(b);  // Thêm các nút menu đã tạo trong AddPage
             side.Controls.Add(new Panel { Height = 20, Width = 10 });  // Khoảng trống
             side.Controls.Add(sideStatus);  // Nhãn trạng thái giả lập
+            side.Controls.Add(mapLbl);  // Nhãn trạng thái map phím
+            side.Controls.Add(statsLbl);  // Nhãn tốc độ mạng / ping / FPS
+            // Nút bật/tắt ADB (chữ và màu đổi theo trạng thái trong RefreshSide)
+            bAdb = SideBtn(side, "ADB", (s, e) => ToggleAdb(), "ADB tắt: game không thấy USB debugging, nhưng map phím / auto click / số liệu / cài APK không dùng được.");
+            // Tiêu đề nhóm thao tác nhanh
+            side.Controls.Add(new Label { Text = "THAO TÁC NHANH", ForeColor = Color.Gray, AutoSize = false, Width = 200, Height = 26, Padding = new Padding(18, 8, 0, 0), Font = new Font("Segoe UI", 8f) });
+            bNet = SideBtn(side, "⇄  Làm mới mạng", (s, e) => RefreshNet(), "Tắt/bật lại Wi-Fi ảo trong Android (~15s). Dùng khi mạng chậm/mất.");
+            bSave = SideBtn(side, "⬇  Lưu trạng thái", (s, e) => SaveState(), "Lưu trạng thái hiện tại (Android đứng hình ~10-20s).");
+            bLoad = SideBtn(side, "↺  Chạy từ bản lưu", (s, e) => RestartEmu(true), "Tắt rồi bật lại đúng trạng thái đã lưu.");
+            bRestart = SideBtn(side, "⟳  Khởi động lại nhanh", (s, e) => RestartEmu(false), "Tắt rồi bật lại bằng Quick Boot, giữ nguyên trạng thái (~20-30s). Dùng khi chạy lâu bị chậm.");
             return side;  // Trả về thanh bên
+        }
+
+        readonly ToolTip tips = new ToolTip();  // Chú thích khi rê chuột lên nút thanh bên
+
+        // Tạo nút nhỏ kiểu tối cho thanh bên
+        Button SideBtn(Control parent, string text, EventHandler h, string tip)
+        {
+            var b = new Button
+            {
+                Text = text, Width = 176, Height = 34, Margin = new Padding(12, 3, 12, 3), FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(6, 0, 0, 0), ForeColor = Color.FromArgb(220, 224, 232), BackColor = CSideHover, Font = new Font("Segoe UI", 9.5f), Cursor = Cursors.Hand
+            };
+            b.FlatAppearance.BorderSize = 0;  // Bỏ viền
+            b.FlatAppearance.MouseOverBackColor = CSideActive;  // Sáng hơn khi rê chuột
+            b.Click += h;  // Gắn xử lý khi bấm
+            tips.SetToolTip(b, tip);  // Chú thích
+            parent.Controls.Add(b);  // Thêm vào thanh bên
+            return b;  // Trả về nút
         }
 
         // Đăng ký một trang và tạo nút menu cho nó
@@ -304,7 +353,7 @@ namespace DsoftEmu
             Btn(actions, "Cài APK...", (s, e) =>
             {
                 using (var d = new OpenFileDialog { Filter = "APK|*.apk", Multiselect = true })  // Hộp thoại chọn file APK, cho chọn nhiều
-                    if (d.ShowDialog(this) == DialogResult.OK) foreach (var f in d.FileNames) InstallApk(f);  // Bấm OK -> cài từng file
+                    if (d.ShowDialog(this) == DialogResult.OK && RequireAdb("Cài APK")) foreach (var f in d.FileNames) InstallApk(f);  // Bấm OK -> cài từng file (cần ADB)
             });
             Btn(actions, "Đổi bản Android", (s, e) => ShowPage("images"));  // Nút chuyển sang trang Bản Android
             head.Controls.Add(actions);  // Thêm hàng nút vào khối đầu
@@ -526,8 +575,15 @@ namespace DsoftEmu
             sideStatus.ForeColor = c == Color.FromArgb(140, 145, 155) ? Color.Gray : c;  // Màu xám thì dùng Gray cho dễ nhìn trên nền tối
 
             var inj = touch.Inj;  // Bộ gửi chạm hiện tại
+            // ADB đang tắt: map phím / auto click không dùng được
+            if (!AdbReady)
+            {
+                SetCheck("input", St.Warn, "ADB đang tắt (game không thấy USB debugging). Map phím / auto click cần ADB.", "Bật ADB", ToggleAdb);
+                inputLbl.Text = "Input: ADB đang tắt";  // Nhãn trên trang Map phím
+                inputLbl.ForeColor = COrange;  // Màu cam
+            }
             // Đã kết nối input
-            if (touch.Ready)
+            else if (touch.Ready)
             {
                 bool fast = inj is ScrcpyTouch;  // Kiểu scrcpy là kiểu nhanh
                 SetCheck("input", fast ? St.Ok : St.Warn, inj.Name, "Kết nối lại", () => Task.Run(() => ConnectInput()));  // Mục input: scrcpy đạt, adb cảnh báo; có nút kết nối lại
@@ -541,6 +597,173 @@ namespace DsoftEmu
                 inputLbl.Text = "Input: chưa kết nối";  // Nhãn báo chưa kết nối
                 inputLbl.ForeColor = COrange;  // Màu cam
             }
+            RefreshSide(on);  // Cập nhật thanh bên: map phím, số liệu, nút thao tác nhanh
+        }
+
+        // Cập nhật phần thêm ở thanh bên; on = giả lập đang bật
+        void RefreshSide(bool on)
+        {
+            // Phím toggle trong keymap đổi mapper.Enabled ở luồng hook -> đồng bộ lại ô tick trên trang Map phím
+            if (kMap.Checked != mapper.Enabled) { syncingMap = true; kMap.Checked = mapper.Enabled; syncingMap = false; }
+            bool adbOk = AdbReady;  // Được dùng ADB không
+            mapLbl.Text = "Map phím: " + (mapper.Enabled ? (adbOk ? "BẬT" : "BẬT · cần ADB") : "TẮT");  // Chữ trạng thái map phím
+            mapLbl.ForeColor = !mapper.Enabled ? Color.Gray : adbOk ? Color.FromArgb(80, 200, 120) : Color.FromArgb(240, 170, 80);  // Xanh / cam (thiếu ADB) / xám
+
+            // Nút ADB: tắt = xanh (an toàn với game), bật = cam (game có thể phát hiện)
+            bAdb.Text = !emu.AdbOn ? "●  ADB: TẮT  (bấm để bật)" : emu.AdbKilled && (emu.Running || androidReady) ? "●  ADB: BẬT  (chờ cold boot)" : "●  ADB: BẬT  (bấm để tắt)";
+            bAdb.ForeColor = emu.AdbOn ? Color.FromArgb(240, 170, 80) : Color.FromArgb(80, 200, 120);
+            bAdb.Enabled = uiOp == 0 && !busy;  // Không cho đổi khi đang bật/tắt giả lập
+
+            bool ready = on && androidReady && uiOp == 0;  // Android sẵn sàng và không đang bật/tắt
+            bNet.Enabled = bSave.Enabled = ready && !busy;  // Làm mới mạng / lưu: cần Android sẵn sàng
+            bRestart.Enabled = emu.Running && uiOp == 0 && !busy;  // Khởi động lại: chỉ cần emulator đang chạy
+            bLoad.Enabled = uiOp == 0 && !busy && emu.HasSave;  // Chạy từ bản lưu: cần có bản lưu (tắt hay bật đều được)
+
+            bool show = S.GetBool("ShowStats", true) && ready;  // Có hiện số liệu không
+            statsLbl.Visible = show;  // Ẩn khi tắt tuỳ chọn hoặc chưa sẵn sàng
+            if (show && !adbOk) { statsLbl.Text = "Mạng / FPS: cần ADB"; statsLbl.ForeColor = Color.Gray; return; }  // ADB tắt: không đọc được số liệu
+            if (!show || busy || polling || (DateTime.Now - lastPoll).TotalSeconds < 2) return;  // Mỗi 2 giây đọc 1 lần, không chạy chồng
+            polling = true;  // Đánh dấu đang đọc
+            lastPoll = DateTime.Now;  // Ghi mốc
+            var adb = emu.NewAdb();  // adb nhắm vào emulator
+            string host = S.Get("PingHost", "8.8.8.8");  // Địa chỉ ping
+            Task.Run(() =>  // Đọc ở luồng nền vì adb + ping mất 1-2 giây
+            {
+                try { stats.Poll(adb, host); } catch { }  // Lỗi đọc thì bỏ qua lần này
+                finally { polling = false; }  // Xong thì cho phép lần sau
+                UI(ShowStats);  // Hiện kết quả trên luồng UI
+            });
+        }
+
+        // Hiện số liệu đã đọc lên nhãn thanh bên
+        void ShowStats()
+        {
+            if (!stats.Valid) { statsLbl.Text = "Mạng: đang đọc..."; statsLbl.ForeColor = Color.Gray; return; }  // Chưa có số liệu
+            string ping = stats.PingMs < 0 ? "mất mạng" : stats.PingMs.ToString("0") + " ms";  // Không có phản hồi ping = mất mạng
+            statsLbl.Text = "↓ " + StatsPoller.Speed(stats.DownKBs) + "  ↑ " + StatsPoller.Speed(stats.UpKBs) + "\r\n" +  // Dòng 1: tốc độ
+                            "Ping " + ping + "\r\n" +  // Dòng 2: ping
+                            "FPS  " + (stats.Fps < 0 ? "-" : stats.Fps.ToString("0"));  // Dòng 3: FPS
+            // Màu theo ping: <100ms xanh, <250ms cam, còn lại / mất mạng đỏ
+            statsLbl.ForeColor = stats.PingMs < 0 ? Color.FromArgb(240, 110, 110) : stats.PingMs < 100 ? Color.FromArgb(200, 204, 215) : stats.PingMs < 250 ? Color.FromArgb(240, 170, 80) : Color.FromArgb(240, 110, 110);
+        }
+
+        // Chạy một thao tác nhanh ở nền, khoá các nút tới khi xong
+        void QuickOp(string what, Action a)
+        {
+            if (busy) return;  // Đang làm thao tác khác thì bỏ qua
+            busy = true;  // Khoá nút
+            RefreshRuntime();  // Cập nhật nút ngay
+            Bg(what, () => { try { a(); } finally { busy = false; } });  // Chạy nền, luôn mở khoá khi xong
+        }
+
+        // ---------- ADB ----------
+
+        /// <summary>Gọi trước tính năng cần ADB (luồng UI). ADB đang tắt thì hỏi có bật không.
+        /// Trả true nếu dùng được ngay; false nếu người dùng từ chối hoặc phải chờ cold boot.</summary>
+        bool RequireAdb(string what)
+        {
+            if (AdbReady) return true;  // Đang dùng được
+            bool needCold = emu.AdbKilled && (emu.Running || androidReady);  // ADB đã bị tắt trong Android đang chạy -> phải cold boot
+            string msg = what + " cần ADB, mà ADB đang tắt (để game không phát hiện USB debugging).\r\n\r\nBật ADB?" +
+                         (needCold ? "\r\n\r\nAndroid sẽ KHỞI ĐỘNG NGUỘI (~1-2 phút): app/game đang mở sẽ bị đóng." : "");
+            if (MessageBox.Show(this, msg, "Cần ADB", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return false;  // Không đồng ý
+            EnableAdb();  // Bật
+            return AdbReady;  // Không cần cold boot thì dùng được ngay
+        }
+
+        // Bấm nút ADB ở thanh bên
+        void ToggleAdb()
+        {
+            if (emu.AdbOn) { DisableAdb(); return; }  // Đang bật -> tắt
+            RequireAdb("Map phím, auto click, số liệu mạng/FPS, cài APK");  // Đang tắt -> hỏi rồi bật
+        }
+
+        // Cho phép dùng ADB; ADB đã bị tắt trong Android đang chạy thì cold boot để bật lại
+        void EnableAdb()
+        {
+            S.Set("AdbOn", true); S.Save();  // Lưu lựa chọn
+            Log.I("Đã cho phép dùng ADB.");  // Ghi log
+            if (!emu.AdbKilled)  // ADB trong Android vẫn còn chạy
+            {
+                if (androidReady && !touch.Ready) Task.Run(() => ConnectInput());  // Kết nối input ngay
+                RefreshAll();  // Làm mới giao diện
+                return;
+            }
+            if (!(emu.Running || androidReady)) { Log.I("Lần ▶ Chạy tới sẽ khởi động nguội để bật lại ADB."); RefreshAll(); return; }  // Giả lập đang tắt
+            // Đang chạy và ADB đã tắt: tắt rồi cold boot
+            busy = true; uiOp = 2; RefreshRuntime();  // Khoá nút, trạng thái "Đang dừng"
+            Bg("Khởi động nguội để bật ADB", () =>
+            {
+                try
+                {
+                    if (emu.Running) emu.Stop();  // Tắt (Quick Boot lưu trạng thái lúc ADB tắt)
+                    androidReady = false; stats.Reset();  // Xoá trạng thái cũ
+                    uiOp = 1;  // "Đang bật"
+                    emu.Start(true);  // Cold boot -> ADB bật lại
+                }
+                finally { uiOp = 0; busy = false; }  // Luôn mở khoá
+            });
+        }
+
+        // Không cho dùng ADB: dừng macro, ngắt input, tắt adbd trong Android
+        void DisableAdb()
+        {
+            S.Set("AdbOn", false); S.Save();  // Lưu lựa chọn
+            MacroRunner.StopAll();  // Macro cần ADB -> dừng
+            bool alive = androidReady && !emu.AdbKilled;  // ADB trong Android đang chạy
+            Bg("Tắt ADB", () =>
+            {
+                lock (touch)  // Không để ConnectInput chạy song song
+                {
+                    var i = touch.Inj; touch.Inj = null;  // Gỡ bộ gửi chạm
+                    if (i != null) i.Dispose();  // Đóng scrcpy-server (cần ADB nên làm trước khi tắt)
+                    touch.Scr.Detach();  // Dừng đọc kích thước màn hình qua adb
+                }
+                if (alive) emu.KillAdb();  // Tắt adbd trong Android
+            });
+        }
+
+        // Tắt/bật Wi-Fi ảo trong Android
+        void RefreshNet()
+        {
+            if (!RequireAdb("Làm mới mạng")) return;  // Cần ADB
+            QuickOp("Làm mới mạng", () =>
+            {
+                if (!emu.RefreshNetwork()) throw new Exception("Chưa có Internet sau ~60s - thử 'Khởi động lại nhanh'.");  // Không có mạng lại thì báo lỗi
+                stats.Reset();  // Số liệu cũ không còn đúng
+            });
+        }
+
+        // Lưu trạng thái vào snapshot dsoft_save
+        void SaveState()
+        {
+            QuickOp("Lưu trạng thái (Android đứng hình ~10-20s)", emu.SaveState);
+        }
+
+        // Tắt rồi bật lại giả lập; fromSave = bật từ bản lưu thay vì Quick Boot
+        void RestartEmu(bool fromSave)
+        {
+            if (busy || uiOp != 0) return;  // Đang thao tác khác thì bỏ qua
+            if (fromSave && !emu.HasSave) { Log.I("Chưa có bản lưu - bấm 'Lưu trạng thái' khi đang chạy."); return; }  // Chưa lưu thì báo
+            // Chạy từ bản lưu sẽ thay trạng thái hiện tại -> hỏi trước
+            if (fromSave && (emu.Running || androidReady) &&
+                MessageBox.Show(this, "Bật lại từ bản lưu? Màn hình/app đang mở sẽ quay về lúc bấm 'Lưu trạng thái'.", "Chạy từ bản lưu", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            SaveUi();  // Lưu cấu hình trên giao diện trước khi bật lại
+            busy = true;  // Khoá nút thao tác nhanh
+            uiOp = emu.Running ? 2 : 1;  // Đang chạy thì trạng thái "Đang dừng", không thì "Đang bật"
+            RefreshRuntime();  // Cập nhật nút ngay
+            Bg(fromSave ? "Chạy từ bản lưu" : "Khởi động lại nhanh", () =>
+            {
+                try
+                {
+                    if (emu.Running) emu.Stop();  // Tắt mềm (Quick Boot tự lưu trạng thái)
+                    androidReady = false;  // Android chưa sẵn sàng
+                    stats.Reset();  // Xoá số liệu cũ
+                    uiOp = 1;  // Chuyển sang "Đang bật"
+                    emu.Restart(fromSave);  // Bật lại
+                }
+                finally { uiOp = 0; busy = false; }  // Luôn mở khoá
+            });
         }
 
         // Bật WHPX bằng DISM với quyền Admin (cửa sổ cmd giữ lại để xem kết quả)
@@ -768,7 +991,11 @@ namespace DsoftEmu
             // Mật độ điểm ảnh
             nDpi = (NumericUpDown)row("DPI", "Càng cao chữ càng to", Num(120, 640, S.GetInt("Dpi", 240), 20));
             // Chế độ GPU
-            cGpu = (ComboBox)row("GPU", "Màn đen/giật: thử angle_indirect", Combo(S.Get("Gpu", "host"), "host", "auto", "angle_indirect", "swiftshader_indirect"));
+            cGpu = (ComboBox)row("GPU", "host = nhanh nhất. Nhấp nháy/màn đen: thử swangle (vẽ bằng CPU, chậm hơn)", Combo(emu.GpuMode, EmulatorController.GpuModes));
+            cGpu.DropDownStyle = ComboBoxStyle.DropDownList;  // Chỉ cho chọn trong danh sách, tránh gõ sai tên chế độ
+            cGpu.SelectedItem = emu.GpuMode;  // Chọn lại giá trị hiện tại sau khi đổi kiểu ô
+            // DNS cho Android: mặc định theo máy thật
+            cDns = (ComboBox)row("DNS", "Theo máy = dùng DNS của Windows. Mạng công ty nên để Theo máy", Combo(DnsLabel(S.Get("Dns", "")), DnsAuto, "8.8.8.8,8.8.4.4", "1.1.1.1,1.0.0.1"));
             // Tham số thêm cho emulator
             tExtra = (TextBox)row("Tham số thêm", "Cho người dùng nâng cao", new TextBox { Width = 220, Text = S.Get("ExtraArgs", "") });
 
@@ -779,6 +1006,8 @@ namespace DsoftEmu
             kRestart = Chk(opts, "Tự khởi động lại khi giả lập crash", S.GetBool("AutoRestart", true));  // Tự khởi động lại khi crash
             kPrio = Chk(opts, "Ưu tiên CPU cao cho giả lập", S.GetBool("HighPriority", true));  // Ưu tiên CPU cao
             kNoAudio = Chk(opts, "Tắt âm thanh - nhẹ hơn chút", S.GetBool("NoAudio", false));  // Tắt âm thanh
+            kStats = Chk(opts, "Hiện tốc độ mạng / ping / FPS ở thanh bên (đọc qua adb mỗi 2 giây)", S.GetBool("ShowStats", true));  // Hiện số liệu
+            kStats.CheckedChanged += (s, e) => { S.Set("ShowStats", kStats.Checked); S.Save(); RefreshRuntime(); };  // Áp dụng ngay, không cần bấm Lưu
 
             var bar = Row();  // Thanh nút trên cùng
             // Nút Lưu cấu hình
@@ -789,7 +1018,7 @@ namespace DsoftEmu
                 host.ApplyRecommended(S);  // Ghi giá trị đề xuất vào S
                 nCores.Value = S.GetInt("Cores", 4); nRam.Value = S.GetInt("RamMB", 4096);  // Cập nhật ô nhân CPU và RAM
                 nW.Value = S.GetInt("Width", 1280); nH.Value = S.GetInt("Height", 720); nDpi.Value = S.GetInt("Dpi", 240);  // Cập nhật ô rộng, cao, DPI
-                cGpu.Text = S.Get("Gpu", "host");  // Cập nhật ô GPU
+                cGpu.Text = emu.GpuMode;  // Cập nhật ô GPU
                 Log.I("Đã điền cấu hình đề xuất, bấm Lưu để áp dụng.");  // Nhắc bấm Lưu
             });
             // Ghi chú thời điểm áp dụng
@@ -892,6 +1121,7 @@ namespace DsoftEmu
             S.Set("Height", (int)nH.Value);  // Cao
             S.Set("Dpi", (int)nDpi.Value);  // DPI
             S.Set("Gpu", cGpu.Text.Trim());  // GPU
+            S.Set("Dns", cDns.Text.Trim() == DnsAuto ? "" : cDns.Text.Trim().Replace(" ", ""));  // DNS: "Theo máy" lưu thành rỗng
             S.Set("ExtraArgs", tExtra.Text.Trim());  // Tham số thêm
             S.Set("QuickBoot", kQuick.Checked);  // Quick boot
             S.Set("BootAnim", kBootAnim.Checked);  // Hoạt ảnh boot
@@ -909,7 +1139,12 @@ namespace DsoftEmu
         {
             var bar = Row();  // Thanh công cụ
             bar.Controls.Add(kMap);  // Ô tick bật map phím
-            kMap.CheckedChanged += (s, e) => mapper.Enabled = kMap.Checked;  // Bật/tắt map phím theo ô tick
+            // Bật/tắt map phím theo ô tick; người dùng tự tick bật khi ADB tắt -> hỏi bật ADB, từ chối thì bỏ tick
+            kMap.CheckedChanged += (s, e) =>
+            {
+                if (kMap.Checked && !syncingMap && !AdbReady && !RequireAdb("Map phím")) { syncingMap = true; kMap.Checked = false; syncingMap = false; }
+                mapper.Enabled = kMap.Checked;
+            };
             Btn(bar, "Lưu && áp dụng  (Ctrl+S)", (s, e) => ApplyKeymap(true), CBlue);  // "&&" hiển thị thành "&" trên nút
             Btn(bar, "Lấy toạ độ từ màn hình...", (s, e) => Pick(keyEdit));  // Nút lấy toạ độ từ ảnh chụp màn hình
             bar.Controls.Add(inputLbl);  // Nhãn trạng thái input
@@ -928,6 +1163,7 @@ namespace DsoftEmu
         // Mở cửa sổ chọn toạ độ trên ảnh chụp màn hình, chèn kết quả vào ô soạn
         void Pick(TextBox target)
         {
+            if (!RequireAdb("Lấy toạ độ từ màn hình")) return;  // Chụp màn hình cần ADB
             var adb = emu.NewAdb();  // Tạo kết nối adb
             // Chọn xong thì chèn chuỗi toạ độ vào vị trí con trỏ
             new PickerForm(adb.Screencap, t => UI(() => { target.SelectedText = t; target.Focus(); })).Show(this);
@@ -940,7 +1176,7 @@ namespace DsoftEmu
         {
             var bar = Row();  // Thanh công cụ
             // Nút Chạy: lưu rồi bật macro đang chọn nếu chưa chạy
-            Btn(bar, "▶ Chạy", (s, e) => { SaveMacro(); var n = CurMacro(); if (n != null && !MacroRunner.IsRunning(n)) ToggleMacro(n); }, CGreen);
+            Btn(bar, "▶ Chạy", (s, e) => { SaveMacro(); var n = CurMacro(); if (n != null && !MacroRunner.IsRunning(n) && RequireAdb("Auto click")) ToggleMacro(n); }, CGreen);
             // Nút Dừng macro đang chọn
             Btn(bar, "■ Dừng", (s, e) => { var n = CurMacro(); if (n != null) MacroRunner.Stop(n); }, CRed);
             Btn(bar, "Dừng tất cả", (s, e) => MacroRunner.StopAll());  // Nút dừng tất cả macro
@@ -1019,6 +1255,8 @@ namespace DsoftEmu
         void ToggleMacro(string name)
         {
             if (MacroRunner.IsRunning(name)) { MacroRunner.Stop(name); return; }  // Đang chạy thì dừng
+            // Gọi từ phím tắt lúc đang chơi: không bật hộp thoại (sẽ che game), chỉ ghi log
+            if (!AdbReady) { Log.I("Macro '" + name + "' cần ADB - bấm 'ADB: TẮT' ở thanh bên để bật."); return; }
             string f = Path.Combine(MacroDir, name + ".txt");  // Đường dẫn file macro
             if (!File.Exists(f)) { Log.I("Không có macro " + f); return; }  // Không có file thì báo
             var errs = new List<string>();  // Danh sách lỗi cú pháp
@@ -1033,6 +1271,7 @@ namespace DsoftEmu
         // Kết nối điều khiển: ưu tiên scrcpy (nhanh), lỗi thì dùng adb input (chậm)
         void ConnectInput()
         {
+            if (!AdbReady) return;  // Không được dùng ADB thì không kết nối
             lock (touch)  // Khoá tránh 2 luồng kết nối cùng lúc
             {
                 var adb = emu.NewAdb();  // Tạo kết nối adb
@@ -1078,8 +1317,15 @@ namespace DsoftEmu
             RefreshStorage();  // Tính dung lượng
             CheckAccel();  // Kiểm tra ảo hoá
             timer.Start();  // Bật timer làm mới
-            // Có adb thì kiểm tra Android đã boot sẵn chưa để kết nối input
-            if (File.Exists(emu.AdbExe)) Task.Run(() => { if (emu.NewAdb().Booted()) ConnectInput(); });
+            // Mở app khi giả lập đã chạy sẵn: có ADB thì kết nối input, không cho dùng ADB thì tắt nó đi
+            if (File.Exists(emu.AdbExe)) Task.Run(() =>
+            {
+                if (!emu.NewAdb().Booted()) return;  // Chưa có Android chạy sẵn
+                androidReady = true;  // Android đang chạy
+                emu.AdbKilled = false;  // ADB đang chạy
+                if (emu.AdbOn) ConnectInput(); else emu.KillAdb();  // Kết nối hoặc tắt ADB
+                UI(RefreshAll);  // Làm mới giao diện
+            });
         }
 
         // Xử lý khi đóng form: hỏi tắt giả lập, dừng macro, giải phóng tài nguyên
