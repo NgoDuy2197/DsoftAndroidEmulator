@@ -37,12 +37,15 @@ namespace DsoftEmu
         readonly string baseDir = AppDomain.CurrentDomain.BaseDirectory;  // Thư mục chứa file exe
         readonly Settings S;  // Cấu hình đọc/ghi settings.ini
         readonly HostInfo host;  // Thông tin phần cứng máy thật (CPU, RAM...)
-        readonly EmulatorController emu;  // Bộ điều khiển giả lập (bật/tắt, máy ảo AVD)
+        // Nhiều máy: mỗi máy một bộ điều khiển; "emu" = máy đang chọn (map phím, auto click, trang Tổng quan đều thao tác lên máy này)
+        readonly List<EmulatorController> emus = new List<EmulatorController>();
+        volatile int sel;  // Chỉ số máy đang chọn
+        EmulatorController emu { get { return emus[Math.Min(sel, emus.Count - 1)]; } }
         readonly TouchService touch = new TouchService();  // Dịch vụ gửi thao tác chạm vào Android
         readonly KeyMapper mapper;  // Bộ map phím bàn phím -> thao tác chạm
-        volatile bool androidReady;  // Android đã boot xong (volatile vì đọc/ghi từ nhiều luồng)
-        // Thao tác giao diện đang làm, volatile vì luồng nền cũng đổi giá trị
-        volatile int uiOp; // 0 = rảnh, 1 = đang bật, 2 = đang dừng
+        // Trạng thái của máy đang chọn (lưu trong từng bộ điều khiển). Luồng nền phải giữ biến máy riêng (var e = emu), không đọc lại emu.
+        bool androidReady { get { return emu.Ready; } set { emu.Ready = value; } }  // Android đã boot xong
+        int uiOp { get { return emu.UiOp; } set { emu.UiOp = value; } }  // 0 = rảnh, 1 = đang bật, 2 = đang dừng
         Button bRun, bCold, bStop;  // Nút Chạy, Cold boot, Dừng ở trang Tổng quan
         // Kết quả kiểm tra ảo hoá phần cứng (emulator -accel-check)
         string accel; // null = chưa kiểm tra
@@ -74,7 +77,8 @@ namespace DsoftEmu
         bool syncingMap;  // Đang đồng bộ ô tick map phím từ code (không hỏi bật ADB)
         // App được dùng ADB ngay lúc này: người dùng cho phép và ADB trong Android chưa bị tắt
         bool AdbReady { get { return emu.AdbOn && !emu.AdbKilled; } }
-        volatile bool busy;  // Đang làm một thao tác nhanh (lưu / làm mới mạng / khởi động lại)
+        bool busy { get { return emu.Busy; } set { emu.Busy = value; } }  // Máy đang chọn đang làm thao tác nhanh
+        FlowLayoutPanel machinesPanel;  // Danh sách máy ở thanh bên
 
         // tổng quan
         readonly Label lCurImg = new Label { AutoSize = true, Font = FBig, ForeColor = CText };  // Tên bản Android đang chọn (chữ lớn)
@@ -117,8 +121,9 @@ namespace DsoftEmu
             S = new Settings(Path.Combine(baseDir, "settings.ini"));  // Nạp cấu hình từ settings.ini
             host = HostInfo.Detect();  // Dò phần cứng máy thật
             if (!S.Has("Cores")) { host.ApplyRecommended(S); S.Save(); }  // Lần đầu chạy (chưa có cấu hình): áp cấu hình đề xuất rồi lưu
-            emu = new EmulatorController(S, baseDir);  // Tạo bộ điều khiển giả lập
-            watch = new Watchdog(S, emu, () => AdbReady);  // Bộ giám sát + Discord (bắt đầu chạy ở OnLoaded)
+            watch = new Watchdog(S, () => emus.ToList(), e => e.AdbOn && !e.AdbKilled);  // Bộ giám sát + Discord (bắt đầu chạy ở OnLoaded)
+            int count = Math.Max(1, Math.Min(8, S.GetInt("Instances", 1)));  // Số máy đã tạo
+            for (int i = 0; i < count; i++) AddMachine();  // Tạo bộ điều khiển cho từng máy
             mapper = new KeyMapper(touch);  // Tạo bộ map phím dùng dịch vụ chạm
             mapper.ToggleMacro = ToggleMacro;  // Phím tắt macro trong keymap sẽ gọi ToggleMacro
 
@@ -149,10 +154,7 @@ namespace DsoftEmu
                 logBox.AppendText(s + "\r\n");  // Thêm dòng log mới kèm xuống dòng
             });
             MacroRunner.Changed += () => UI(RefreshMacroList);  // Danh sách macro đang chạy thay đổi -> vẽ lại danh sách
-            // Android boot xong -> đánh dấu sẵn sàng; chỉ kết nối input khi được dùng ADB
-            emu.Booted += () => { androidReady = true; if (AdbReady) Task.Run(() => ConnectInput()); UI(RefreshAll); };
-            emu.Stopped += () => { androidReady = false; UI(RefreshAll); };  // Giả lập tắt -> xoá cờ sẵn sàng, làm mới giao diện
-            timer.Tick += (s, e) => RefreshRuntime();  // Mỗi nhịp timer cập nhật trạng thái chạy
+            timer.Tick += (s, e) => { FollowFocus(); RefreshRuntime(); };  // Mỗi nhịp: theo cửa sổ emulator đang focus, cập nhật trạng thái
 
             DragEnter += (s, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };  // Kéo file vào: chấp nhận nếu dữ liệu là file
             // Thả file: cài từng file có đuôi .apk
@@ -171,13 +173,19 @@ namespace DsoftEmu
         // Dựng thanh bên: logo, nút menu, trạng thái
         Control BuildSidebar()
         {
-            var side = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 200, BackColor = CSide, FlowDirection = FlowDirection.TopDown, WrapContents = false };  // Panel xếp dọc, nền tối, không xuống cột
+            // Panel xếp dọc, nền tối; rộng 226 = nội dung 200 + lề 6 + thanh cuộn dọc khi nhiều máy (không sinh thanh cuộn ngang)
+            var side = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 226, BackColor = CSide, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
             // Chữ logo "Dsoft"
             side.Controls.Add(new Label { Text = "Dsoft", Font = new Font("Segoe UI Semibold", 20f), ForeColor = Color.White, AutoSize = false, Width = 200, Height = 50, Padding = new Padding(16, 10, 0, 0) });
             // Dòng phụ "Android Emulator"
             side.Controls.Add(new Label { Text = "Android Emulator", ForeColor = Color.Gray, AutoSize = false, Width = 200, Height = 34, Padding = new Padding(19, 0, 0, 0) });
             foreach (var b in nav) side.Controls.Add(b);  // Thêm các nút menu đã tạo trong AddPage
-            side.Controls.Add(new Panel { Height = 20, Width = 10 });  // Khoảng trống
+            // Danh sách máy: bấm tên = chọn máy để điều khiển, nút bên phải = Chạy/Dừng máy đó
+            side.Controls.Add(new Label { Text = "MÁY ẢO", ForeColor = Color.Gray, AutoSize = false, Width = 200, Height = 26, Padding = new Padding(18, 8, 0, 0), Font = new Font("Segoe UI", 8f) });
+            machinesPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Width = 200, Margin = new Padding(0) };
+            side.Controls.Add(machinesPanel);
+            BuildMachineList();
+            side.Controls.Add(new Panel { Height = 8, Width = 10 });  // Khoảng trống
             side.Controls.Add(sideStatus);  // Nhãn trạng thái giả lập
             side.Controls.Add(mapLbl);  // Nhãn trạng thái map phím
             side.Controls.Add(statsLbl);  // Nhãn tốc độ mạng / ping / FPS
@@ -209,6 +217,152 @@ namespace DsoftEmu
             tips.SetToolTip(b, tip);  // Chú thích
             parent.Controls.Add(b);  // Thêm vào thanh bên
             return b;  // Trả về nút
+        }
+
+        // =============== Nhiều máy ===============
+
+        // Tạo bộ điều khiển cho máy tiếp theo và gắn sự kiện (chưa đụng giao diện)
+        EmulatorController AddMachine()
+        {
+            var e = new EmulatorController(S, baseDir, emus.Count);
+            emus.Add(e);
+            EmulatorController.Count = emus.Count;
+            // Android boot xong -> đánh dấu sẵn sàng; chỉ kết nối input khi đó là máy đang chọn và được dùng ADB
+            e.Booted += () => { e.Ready = true; if (e == emu && AdbReady) Task.Run(() => ConnectInput()); UI(RefreshAll); };
+            e.Stopped += () => { e.Ready = false; UI(RefreshAll); };  // Máy tắt -> xoá cờ sẵn sàng
+            watch.Attach(e);
+            return e;
+        }
+
+        // Vẽ lại danh sách máy ở thanh bên: [● Máy N · trạng thái] [▶/■], cuối cùng là nút "+ Thêm máy"
+        void BuildMachineList()
+        {
+            machinesPanel.SuspendLayout();
+            machinesPanel.Controls.Clear();
+            foreach (var e0 in emus)
+            {
+                var e = e0;
+                var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(12, 2, 0, 2) };
+                var name = new Button { Width = 136, Height = 30, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0), Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand, Tag = e };
+                name.FlatAppearance.BorderSize = 0;
+                name.Click += (s, a) => SelectMachine(e.Index, true);
+                var act = new Button { Width = 36, Height = 30, FlatStyle = FlatStyle.Flat, Margin = new Padding(4, 0, 0, 0), Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand, ForeColor = Color.White, Tag = e };
+                act.FlatAppearance.BorderSize = 0;
+                act.Click += (s, a) => { if (e.Running || e.Ready || e.UiOp != 0) StopEmu(e); else StartEmu(e, false); };
+                tips.SetToolTip(act, "Chạy / Dừng " + e.Label);
+                // Chuột phải: nhân bản / xoá máy
+                var menu = new ContextMenuStrip();
+                menu.Items.Add("Xoá " + e.Label + " (cả dữ liệu)", null, (s, a) => RemoveMachine(e)).Enabled = e.Index > 0 && e.Index == emus.Count - 1;
+                name.ContextMenuStrip = menu;
+                tips.SetToolTip(name, "Bấm để điều khiển " + e.Label + " (map phím, auto click, nút thao tác nhanh). Chuột phải để xoá.");
+                row.Controls.Add(name);
+                row.Controls.Add(act);
+                machinesPanel.Controls.Add(row);
+            }
+            var add = new Button { Text = "+  Thêm máy", Width = 176, Height = 28, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(12, 2, 0, 2), Padding = new Padding(6, 0, 0, 0), ForeColor = Color.Gray, BackColor = CSide, Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand };
+            add.FlatAppearance.BorderSize = 0;
+            add.Click += (s, a) => NewMachine();
+            add.Visible = emus.Count < 8;
+            machinesPanel.Controls.Add(add);
+            machinesPanel.ResumeLayout();
+            RefreshMachines();
+        }
+
+        // Cập nhật chữ/màu từng dòng máy theo trạng thái (gọi mỗi nhịp timer)
+        void RefreshMachines()
+        {
+            if (machinesPanel == null) return;
+            foreach (Control row in machinesPanel.Controls)
+            {
+                if (!(row is FlowLayoutPanel) || row.Controls.Count < 2) continue;
+                var name = (Button)row.Controls[0]; var act = (Button)row.Controls[1];
+                var e = (EmulatorController)name.Tag;
+                bool on = e.Running || e.Ready;
+                string st = e.UiOp == 2 ? "đang dừng" : e.UiOp == 1 || (e.Running && !e.IsBooted && !e.Ready) ? "đang bật" : on ? "đang chạy" : "tắt";
+                name.Text = (e == emu ? "▸ " : "   ") + e.Label + " · " + st;
+                name.BackColor = e == emu ? CSideActive : CSideHover;
+                name.ForeColor = st == "đang chạy" ? Color.FromArgb(80, 200, 120) : st == "tắt" ? Color.FromArgb(200, 204, 215) : Color.FromArgb(240, 170, 80);
+                act.Text = on || e.UiOp != 0 ? "■" : "▶";
+                act.BackColor = on || e.UiOp != 0 ? CRed : CGreen;
+                act.Enabled = e.UiOp != 2;
+            }
+        }
+
+        /// <summary>Chọn máy để điều khiển. Ngắt input/macro của máy cũ, nối input máy mới (nếu có ADB).</summary>
+        void SelectMachine(int index, bool fromUser)
+        {
+            if (index < 0 || index >= emus.Count || index == sel) return;
+            MacroRunner.StopAll();  // Macro đang chạy trên máy cũ -> dừng, tránh bấm nhầm sang máy mới
+            sel = index;
+            stats.Reset();
+            var e = emu;
+            Log.I("Đang điều khiển " + e.Label + (fromUser ? "" : " (theo cửa sổ đang focus)"));
+            Task.Run(() =>
+            {
+                lock (touch)
+                {
+                    var i = touch.Inj; touch.Inj = null;  // Gỡ input của máy cũ
+                    if (i != null) i.Dispose();
+                    touch.Scr.Detach();
+                }
+                if (e == emu && e.Ready && e.AdbOn && !e.AdbKilled) ConnectInput();  // Máy mới có ADB -> nối input
+                UI(RefreshAll);
+            });
+            RefreshAll();
+        }
+
+        // Cửa sổ emulator nào đang focus thì tự chọn máy đó (map phím đi đúng máy)
+        void FollowFocus()
+        {
+            if (emus.Count < 2) return;
+            var sb = new System.Text.StringBuilder(256);
+            GetWindowText(GetForegroundWindow(), sb, sb.Capacity);
+            string t = sb.ToString();
+            if (!t.StartsWith("Android Emulator - ")) return;
+            int c = t.LastIndexOf(':'), port;
+            if (c < 0 || !int.TryParse(t.Substring(c + 1), out port)) return;
+            var m = emus.FirstOrDefault(x => x.Port == port);
+            if (m != null && m != emu) SelectMachine(m.Index, false);
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+
+        // Thêm máy: nhân bản máy đang chọn hoặc tạo máy trắng
+        void NewMachine()
+        {
+            var src = emu;
+            var r = MessageBox.Show(this,
+                "Thêm Máy " + (emus.Count + 1) + ":\r\n\r\n" +
+                "YES  = Nhân bản " + src.Label + " (copy app, game, tài khoản; mất vài phút; " + src.Label + " phải đang tắt).\r\n" +
+                "         Lưu ý: bản sao có cùng ID thiết bị với " + src.Label + ".\r\n" +
+                "NO   = Máy mới trắng (như điện thoại mới, phải cài game lại).\r\n" +
+                "Cancel = Huỷ",
+                "Thêm máy", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (r == DialogResult.Cancel) return;
+            if (r == DialogResult.Yes && (src.Running || src.Ready)) { MessageBox.Show(this, "Tắt " + src.Label + " trước khi nhân bản."); return; }
+            var e = AddMachine();
+            S.Set("Instances", emus.Count); S.Save();
+            BuildMachineList();
+            if (r == DialogResult.Yes)
+            {
+                e.UiOp = 1;  // Hiện "đang bật" trong lúc copy để không bấm Chạy giữa chừng
+                Bg("Nhân bản " + src.Label + " → " + e.Label, () => { try { e.CloneFrom(src); } finally { e.UiOp = 0; } });
+            }
+            else Log.I("Đã thêm " + e.Label + " (máy trắng). Bấm ▶ cạnh tên máy để chạy; lần đầu boot 2-5 phút.");
+        }
+
+        // Xoá máy cuối danh sách (giữ số thứ tự liên tục)
+        void RemoveMachine(EmulatorController e)
+        {
+            if (e.Index == 0 || e.Index != emus.Count - 1) return;
+            if (e.Running || e.Ready) { MessageBox.Show(this, "Dừng " + e.Label + " trước."); return; }
+            if (MessageBox.Show(this, "XOÁ " + e.Label + " cùng toàn bộ dữ liệu (app, game, tài khoản)?\r\nKhông khôi phục được.", "Xoá máy", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            if (sel == e.Index) SelectMachine(0, true);
+            emus.Remove(e);
+            EmulatorController.Count = emus.Count;
+            S.Set("Instances", emus.Count); S.Save();
+            BuildMachineList();
+            Bg("Xoá " + e.Label, e.DeleteOwnAvd);
         }
 
         // Đăng ký một trang và tạo nút menu cho nó
@@ -525,7 +679,7 @@ namespace DsoftEmu
 
             lCurImg.Text = CurImageName;  // Hiện tên bản đang chọn
             // Dòng mô tả: tên máy ảo, nhân, RAM, độ phân giải, GPU
-            lCurSub.Text = "Máy ảo " + emu.AvdName + "  ·  " + S.GetInt("Cores", 4) + " nhân  ·  " + S.GetInt("RamMB", 4096) + " MB RAM  ·  " +
+            lCurSub.Text = (emus.Count > 1 ? emu.Label + " · " : "") + "Máy ảo " + emu.AvdName + "  ·  " + S.GetInt("Cores", 4) + " nhân  ·  " + S.GetInt("RamMB", 4096) + " MB RAM  ·  " +
                            S.GetInt("Width", 1280) + "x" + S.GetInt("Height", 720) + "  ·  GPU " + S.Get("Gpu", "host");  // Phần sau của chuỗi mô tả
         }
 
@@ -624,7 +778,8 @@ namespace DsoftEmu
             bNet.Enabled = bSave.Enabled = ready && !busy;  // Làm mới mạng / lưu: cần Android sẵn sàng
             bRestart.Enabled = emu.Running && uiOp == 0 && !busy;  // Khởi động lại: chỉ cần emulator đang chạy
             bLoad.Enabled = uiOp == 0 && !busy && emu.HasSave;  // Chạy từ bản lưu: cần có bản lưu (tắt hay bật đều được)
-            bShot.Enabled = ready && !shooting;  // Chụp gửi Discord: cần Android sẵn sàng
+            bShot.Enabled = emus.Any(x => x.IsBooted) && !shooting;  // Chụp gửi Discord: cần ít nhất 1 máy sẵn sàng (ghép ảnh mọi máy)
+            RefreshMachines();  // Danh sách máy
 
             bool show = S.GetBool("ShowStats", true) && ready;  // Có hiện số liệu không
             statsLbl.Visible = show;  // Ẩn khi tắt tuỳ chọn hoặc chưa sẵn sàng
@@ -657,10 +812,11 @@ namespace DsoftEmu
         // Chạy một thao tác nhanh ở nền, khoá các nút tới khi xong
         void QuickOp(string what, Action a)
         {
-            if (busy) return;  // Đang làm thao tác khác thì bỏ qua
-            busy = true;  // Khoá nút
+            var e = emu;  // Giữ máy hiện tại (người dùng có thể đổi máy khi thao tác đang chạy)
+            if (e.Busy) return;  // Đang làm thao tác khác thì bỏ qua
+            e.Busy = true;  // Khoá nút
             RefreshRuntime();  // Cập nhật nút ngay
-            Bg(what, () => { try { a(); } finally { busy = false; } });  // Chạy nền, luôn mở khoá khi xong
+            Bg(what + (emus.Count > 1 ? " (" + e.Label + ")" : ""), () => { try { a(); } finally { e.Busy = false; } });  // Chạy nền, luôn mở khoá khi xong
         }
 
         // ---------- ADB ----------
@@ -688,36 +844,38 @@ namespace DsoftEmu
         // Cho phép dùng ADB; ADB đã bị tắt trong Android đang chạy thì cold boot để bật lại
         void EnableAdb()
         {
-            S.Set("AdbOn", true); S.Save();  // Lưu lựa chọn
-            Log.I("Đã cho phép dùng ADB.");  // Ghi log
-            if (!emu.AdbKilled)  // ADB trong Android vẫn còn chạy
+            var e = emu;  // Máy đang chọn
+            e.SetAdbOn(true);  // Lưu lựa chọn (riêng từng máy)
+            Log.I("Đã cho phép dùng ADB" + (emus.Count > 1 ? " trên " + e.Label : "") + ".");  // Ghi log
+            if (!e.AdbKilled)  // ADB trong Android vẫn còn chạy
             {
-                if (androidReady && !touch.Ready) Task.Run(() => ConnectInput());  // Kết nối input ngay
+                if (e.Ready && !touch.Ready) Task.Run(() => ConnectInput());  // Kết nối input ngay
                 RefreshAll();  // Làm mới giao diện
                 return;
             }
-            if (!(emu.Running || androidReady)) { Log.I("Lần ▶ Chạy tới sẽ khởi động nguội để bật lại ADB."); RefreshAll(); return; }  // Giả lập đang tắt
+            if (!(e.Running || e.Ready)) { Log.I("Lần ▶ Chạy tới sẽ khởi động nguội để bật lại ADB."); RefreshAll(); return; }  // Giả lập đang tắt
             // Đang chạy và ADB đã tắt: tắt rồi cold boot
-            busy = true; uiOp = 2; RefreshRuntime();  // Khoá nút, trạng thái "Đang dừng"
+            e.Busy = true; e.UiOp = 2; RefreshRuntime();  // Khoá nút, trạng thái "Đang dừng"
             Bg("Khởi động nguội để bật ADB", () =>
             {
                 try
                 {
-                    if (emu.Running) emu.Stop();  // Tắt (Quick Boot lưu trạng thái lúc ADB tắt)
-                    androidReady = false; stats.Reset();  // Xoá trạng thái cũ
-                    uiOp = 1;  // "Đang bật"
-                    emu.Start(true);  // Cold boot -> ADB bật lại
+                    if (e.Running) e.Stop();  // Tắt (Quick Boot lưu trạng thái lúc ADB tắt)
+                    e.Ready = false; stats.Reset();  // Xoá trạng thái cũ
+                    e.UiOp = 1;  // "Đang bật"
+                    e.Start(true);  // Cold boot -> ADB bật lại
                 }
-                finally { uiOp = 0; busy = false; }  // Luôn mở khoá
+                finally { e.UiOp = 0; e.Busy = false; }  // Luôn mở khoá
             });
         }
 
         // Không cho dùng ADB: dừng macro, ngắt input, tắt adbd trong Android
         void DisableAdb()
         {
-            S.Set("AdbOn", false); S.Save();  // Lưu lựa chọn
+            var e = emu;  // Máy đang chọn
+            e.SetAdbOn(false);  // Lưu lựa chọn
             MacroRunner.StopAll();  // Macro cần ADB -> dừng
-            bool alive = androidReady && !emu.AdbKilled;  // ADB trong Android đang chạy
+            bool alive = e.Ready && !e.AdbKilled;  // ADB trong Android đang chạy
             Bg("Tắt ADB", () =>
             {
                 lock (touch)  // Không để ConnectInput chạy song song
@@ -726,7 +884,7 @@ namespace DsoftEmu
                     if (i != null) i.Dispose();  // Đóng scrcpy-server (cần ADB nên làm trước khi tắt)
                     touch.Scr.Detach();  // Dừng đọc kích thước màn hình qua adb
                 }
-                if (alive) emu.KillAdb();  // Tắt adbd trong Android
+                if (alive) e.KillAdb();  // Tắt adbd trong Android
             });
         }
 
@@ -734,9 +892,10 @@ namespace DsoftEmu
         void RefreshNet()
         {
             if (!RequireAdb("Làm mới mạng")) return;  // Cần ADB
+            var e = emu;
             QuickOp("Làm mới mạng", () =>
             {
-                if (!emu.RefreshNetwork()) throw new Exception("Chưa có Internet sau ~60s - thử 'Khởi động lại nhanh'.");  // Không có mạng lại thì báo lỗi
+                if (!e.RefreshNetwork()) throw new Exception("Chưa có Internet sau ~60s - thử 'Khởi động lại nhanh'.");  // Không có mạng lại thì báo lỗi
                 stats.Reset();  // Số liệu cũ không còn đúng
             });
         }
@@ -750,26 +909,27 @@ namespace DsoftEmu
         // Tắt rồi bật lại giả lập; fromSave = bật từ bản lưu thay vì Quick Boot
         void RestartEmu(bool fromSave)
         {
-            if (busy || uiOp != 0) return;  // Đang thao tác khác thì bỏ qua
-            if (fromSave && !emu.HasSave) { Log.I("Chưa có bản lưu - bấm 'Lưu trạng thái' khi đang chạy."); return; }  // Chưa lưu thì báo
+            var e = emu;  // Máy đang chọn
+            if (e.Busy || e.UiOp != 0) return;  // Đang thao tác khác thì bỏ qua
+            if (fromSave && !e.HasSave) { Log.I("Chưa có bản lưu - bấm 'Lưu trạng thái' khi đang chạy."); return; }  // Chưa lưu thì báo
             // Chạy từ bản lưu sẽ thay trạng thái hiện tại -> hỏi trước
-            if (fromSave && (emu.Running || androidReady) &&
-                MessageBox.Show(this, "Bật lại từ bản lưu? Màn hình/app đang mở sẽ quay về lúc bấm 'Lưu trạng thái'.", "Chạy từ bản lưu", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            if (fromSave && (e.Running || e.Ready) &&
+                MessageBox.Show(this, "Bật lại " + e.Label + " từ bản lưu? Màn hình/app đang mở sẽ quay về lúc bấm 'Lưu trạng thái'.", "Chạy từ bản lưu", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             SaveUi();  // Lưu cấu hình trên giao diện trước khi bật lại
-            busy = true;  // Khoá nút thao tác nhanh
-            uiOp = emu.Running ? 2 : 1;  // Đang chạy thì trạng thái "Đang dừng", không thì "Đang bật"
+            e.Busy = true;  // Khoá nút thao tác nhanh
+            e.UiOp = e.Running ? 2 : 1;  // Đang chạy thì trạng thái "Đang dừng", không thì "Đang bật"
             RefreshRuntime();  // Cập nhật nút ngay
-            Bg(fromSave ? "Chạy từ bản lưu" : "Khởi động lại nhanh", () =>
+            Bg((fromSave ? "Chạy từ bản lưu" : "Khởi động lại nhanh") + (emus.Count > 1 ? " (" + e.Label + ")" : ""), () =>
             {
                 try
                 {
-                    if (emu.Running) emu.Stop();  // Tắt mềm (Quick Boot tự lưu trạng thái)
-                    androidReady = false;  // Android chưa sẵn sàng
+                    if (e.Running) e.Stop();  // Tắt mềm (Quick Boot tự lưu trạng thái)
+                    e.Ready = false;  // Android chưa sẵn sàng
                     stats.Reset();  // Xoá số liệu cũ
-                    uiOp = 1;  // Chuyển sang "Đang bật"
-                    emu.Restart(fromSave);  // Bật lại
+                    e.UiOp = 1;  // Chuyển sang "Đang bật"
+                    e.Restart(fromSave);  // Bật lại
                 }
-                finally { uiOp = 0; busy = false; }  // Luôn mở khoá
+                finally { e.UiOp = 0; e.Busy = false; }  // Luôn mở khoá
             });
         }
 
@@ -795,25 +955,38 @@ namespace DsoftEmu
         }
 
         // Bật giả lập; cold = true thì khởi động nguội (bỏ snapshot)
-        void StartEmu(bool cold)
+        void StartEmu(bool cold) { StartEmu(emu, cold); }
+
+        // Bật máy e (nút trên trang Tổng quan dùng máy đang chọn, nút ▶ ở danh sách máy dùng máy của dòng đó)
+        void StartEmu(EmulatorController e, bool cold)
         {
+            if (e.UiOp != 0 || e.Running) return;  // Đang bật/tắt hoặc đã chạy
             SaveUi();  // Lưu cấu hình trên giao diện trước
-            if (!File.Exists(emu.EmulatorExe)) { Log.I("Chưa có Emulator - bấm 'Tải về' ở mục Emulator + ADB."); ShowPage("home"); return; }  // Thiếu emulator thì báo và về Tổng quan
+            if (!File.Exists(e.EmulatorExe)) { Log.I("Chưa có Emulator - bấm 'Tải về' ở mục Emulator + ADB."); ShowPage("home"); return; }  // Thiếu emulator thì báo và về Tổng quan
             if (!CurImageInstalled) { Log.I("Chưa tải " + CurImageName + "."); ShowPage("images"); return; }  // Chưa có image thì mở trang Bản Android
-            uiOp = 1;  // Đánh dấu đang bật
+            // Nhiều máy cùng lúc: tổng RAM máy ảo vượt RAM thật (chừa ~3 GB cho Windows) thì hỏi lại
+            int runningCount = emus.Count(x => x != e && (x.Running || x.Ready));
+            long needMB = (long)(runningCount + 1) * S.GetInt("RamMB", 4096);
+            if (runningCount > 0 && needMB > host.RamMB - 3072 &&
+                MessageBox.Show(this, (runningCount + 1) + " máy × " + S.GetInt("RamMB", 4096) + " MB = " + needMB / 1024 + " GB RAM, máy thật chỉ có " + host.RamMB / 1024 + " GB.\r\n" +
+                    "Có thể giật, lag hoặc crash. Giảm RAM máy ảo ở trang Cấu hình nếu cần.\r\n\r\nVẫn chạy " + e.Label + "?", "Thiếu RAM", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            e.UiOp = 1;  // Đánh dấu đang bật
             RefreshRuntime();  // Cập nhật nút ngay
+            string who = emus.Count > 1 ? e.Label + " · " : "";
             // Chạy emulator ở nền; xong hay lỗi đều trả về trạng thái rảnh
-            Bg(cold ? "Cold boot " + CurImageName : "Khởi động " + CurImageName, () => { try { emu.Start(cold); } finally { uiOp = 0; } });
+            Bg((cold ? "Cold boot " : "Khởi động ") + who + CurImageName, () => { try { e.Start(cold); } finally { e.UiOp = 0; } });
         }
 
         // Dừng giả lập ở nền
-        void StopEmu()
+        void StopEmu() { StopEmu(emu); }
+
+        void StopEmu(EmulatorController e)
         {
-            if (uiOp == 2) return;  // Đang dừng rồi thì bỏ qua
-            uiOp = 2;  // Đánh dấu đang dừng
+            if (e.UiOp == 2) return;  // Đang dừng rồi thì bỏ qua
+            e.UiOp = 2;  // Đánh dấu đang dừng
             RefreshRuntime();  // Cập nhật nút ngay
             // Dừng emulator; luôn reset cờ dù có lỗi
-            Bg("Dừng giả lập", () => { try { emu.Stop(); } finally { androidReady = false; uiOp = 0; } });
+            Bg("Dừng " + (emus.Count > 1 ? e.Label : "giả lập"), () => { try { e.Stop(); } finally { e.Ready = false; e.UiOp = 0; } });
         }
 
         // =============== Bản Android ===============
@@ -889,7 +1062,7 @@ namespace DsoftEmu
         // Bản này là bản đang dùng và giả lập đang chạy?
         bool IsCurrentAndRunning(SdkInstaller.ImageInfo i)
         {
-            return i.Api == emu.Api && i.Tag == emu.Tag && (emu.Running || androidReady);  // Cùng API, cùng loại và đang chạy
+            return i.Api == emu.Api && i.Tag == emu.Tag && emus.Any(x => x.Running || x.Ready);  // Cùng API, cùng loại và có máy đang chạy
         }
 
         // Cài bản đang chọn; useAfter = dùng luôn sau khi cài
@@ -1166,7 +1339,7 @@ namespace DsoftEmu
         // Đổi thư mục lưu image + máy ảo, có thể chuyển dữ liệu cũ sang
         void ChangeStorage()
         {
-            if (emu.Running || androidReady) { MessageBox.Show(this, "Dừng giả lập trước khi đổi nơi lưu."); return; }  // Đang chạy thì không cho đổi
+            if (emus.Any(x => x.Running || x.Ready)) { MessageBox.Show(this, "Dừng tất cả máy trước khi đổi nơi lưu."); return; }  // Đang chạy thì không cho đổi
             string dir;  // Thư mục mới
             // Hộp thoại chọn thư mục
             using (var d = new FolderBrowserDialog { Description = "Chọn thư mục lưu image + máy ảo (nên chọn ổ còn nhiều chỗ, ví dụ D:\\DsoftData)", ShowNewFolderButton = true })
@@ -1376,9 +1549,11 @@ namespace DsoftEmu
             if (!AdbReady) return;  // Không được dùng ADB thì không kết nối
             lock (touch)  // Khoá tránh 2 luồng kết nối cùng lúc
             {
-                var adb = emu.NewAdb();  // Tạo kết nối adb
+                var e = emu;  // Máy đang chọn (input chỉ nối vào máy này)
+                if (!e.AdbOn || e.AdbKilled) return;
+                var adb = e.NewAdb();  // Tạo kết nối adb
                 if (!adb.Online()) { Log.I("Chưa thấy thiết bị " + adb.Serial + " trong adb."); return; }  // Thiết bị chưa online thì báo
-                androidReady = true;  // Đánh dấu Android sẵn sàng
+                e.Ready = true;  // Đánh dấu Android sẵn sàng
                 var old = touch.Inj;  // Bộ gửi chạm cũ
                 touch.Inj = null;  // Gỡ bộ cũ
                 if (old != null) old.Dispose();  // Giải phóng bộ cũ
@@ -1404,7 +1579,8 @@ namespace DsoftEmu
         void InstallApk(string file)
         {
             // -r = cài đè, -g = cấp sẵn quyền, timeout 5 phút
-            Bg("Cài " + Path.GetFileName(file), () => Log.I(emu.NewAdb().Run("install -r -g \"" + file + "\"", 300000).Trim()));
+            var adb = emu.NewAdb();  // Cài vào máy đang chọn
+            Bg("Cài " + Path.GetFileName(file) + (emus.Count > 1 ? " vào " + emu.Label : ""), () => Log.I(adb.Run("install -r -g \"" + file + "\"", 300000).Trim()));
         }
 
         // Khởi động phần còn lại sau khi form hiện
@@ -1421,25 +1597,31 @@ namespace DsoftEmu
             timer.Start();  // Bật timer làm mới
             watch.Start();  // Bật giám sát (chỉ gửi khi đã khai webhook)
             // Mở app khi giả lập đã chạy sẵn: có ADB thì kết nối input, không cho dùng ADB thì tắt nó đi
-            if (File.Exists(emu.AdbExe)) Task.Run(() =>
-            {
-                if (!emu.NewAdb().Booted()) return;  // Chưa có Android chạy sẵn
-                androidReady = true;  // Android đang chạy
-                emu.AdbKilled = false;  // ADB đang chạy
-                if (emu.AdbOn) ConnectInput(); else emu.KillAdb();  // Kết nối hoặc tắt ADB
-                UI(RefreshAll);  // Làm mới giao diện
-            });
+            if (File.Exists(emu.AdbExe))
+                foreach (var e0 in emus.ToList())
+                {
+                    var e = e0;
+                    Task.Run(() =>
+                    {
+                        if (!e.NewAdb().Booted()) return;  // Máy này chưa có Android chạy sẵn
+                        e.Ready = true;  // Android đang chạy
+                        e.AdbKilled = false;  // ADB đang chạy
+                        if (!e.AdbOn) e.KillAdb(); else if (e == emu) ConnectInput();  // Tắt ADB, hoặc nối input nếu là máy đang chọn
+                        UI(RefreshAll);  // Làm mới giao diện
+                    });
+                }
         }
 
         // Xử lý khi đóng form: hỏi tắt giả lập, dừng macro, giải phóng tài nguyên
         void OnClosing(object sender, FormClosingEventArgs e)
         {
-            // Giả lập đang chạy thì hỏi
-            if (emu.Running)
+            // Có máy đang chạy thì hỏi
+            var running = emus.Where(x => x.Running).ToList();
+            if (running.Count > 0)
             {
-                var r = MessageBox.Show(this, "Tắt luôn giả lập?", "Thoát", MessageBoxButtons.YesNoCancel);  // Hỏi Yes/No/Cancel
+                var r = MessageBox.Show(this, running.Count > 1 ? "Tắt luôn " + running.Count + " máy đang chạy?" : "Tắt luôn giả lập?", "Thoát", MessageBoxButtons.YesNoCancel);  // Hỏi Yes/No/Cancel
                 if (r == DialogResult.Cancel) { e.Cancel = true; return; }  // Cancel = không đóng form
-                if (r == DialogResult.Yes) emu.Stop();  // Yes = tắt luôn giả lập
+                if (r == DialogResult.Yes) Task.WaitAll(running.Select(x => Task.Run(() => x.Stop())).ToArray());  // Yes = tắt hết (song song)
             }
             timer.Stop();  // Dừng timer
             watch.Stop();  // Dừng giám sát
