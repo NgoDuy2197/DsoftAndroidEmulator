@@ -53,6 +53,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
 
         public event Action Booted; // Sự kiện phát ra khi Android boot xong
         public event Action Stopped; // Sự kiện phát ra khi emulator đã dừng hẳn
+        public event Action<int, bool> Exited; // Emulator thoát: (mã thoát, true = không phải do app chủ động dừng)
 
         // Hàm khởi tạo: nhận cấu hình và thư mục gốc
         public EmulatorController(Settings s, string baseDir) { S = s; this.baseDir = baseDir; }
@@ -264,7 +265,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         public bool HasSave { get { return Directory.Exists(Path.Combine(AvdHome, AvdName + ".avd", "snapshots", SaveName)); } }
 
         // Gửi lệnh tới cổng console của emulator qua "adb emu <lệnh>"
-        string EmuConsole(string cmd, int timeoutMs) { return Proc.Run(AdbExe, NewAdb().Target + " emu " + cmd, timeoutMs, null); }
+        public string EmuConsole(string cmd, int timeoutMs) { return Proc.Run(AdbExe, NewAdb().Target + " emu " + cmd, timeoutMs, null); }
 
         /// <summary>Lưu trạng thái đang chạy vào snapshot dsoft_save (Android đứng hình ~10-20s).
         /// KHÔNG ghi đè default_boot: thử trên máy này thì emulator crash và hỏng điểm Quick Boot.</summary>
@@ -490,6 +491,8 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             try { code = ((Process)sender).ExitCode; } catch { } // Đọc mã thoát của tiến trình
             IsBooted = false; // Không còn ở trạng thái đã boot
             Log.I("Emulator thoát, mã " + code); // Ghi log mã thoát
+            var ex0 = Exited; // Báo cho bộ giám sát (gửi Discord)
+            if (ex0 != null) try { ex0(code, !stopping); } catch { }
             // mã 0 = người dùng tự đóng cửa sổ, không phải crash
             // Tự khởi động lại khi: không phải dừng chủ động, mã khác 0, bật AutoRestart và chưa quá 3 lần
             if (!stopping && code != 0 && S.GetBool("AutoRestart", true) && autoRestarts < 3)

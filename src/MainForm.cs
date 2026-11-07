@@ -66,7 +66,11 @@ namespace DsoftEmu
         readonly StatsPoller stats = new StatsPoller();  // Bộ đọc số liệu qua adb
         volatile bool polling;  // Đang đọc số liệu (tránh chạy chồng)
         DateTime lastPoll = DateTime.MinValue;  // Lần đọc số liệu gần nhất
-        Button bNet, bSave, bRestart, bLoad, bAdb;  // Nút thao tác nhanh ở thanh bên
+        Button bNet, bSave, bRestart, bLoad, bAdb, bShot;  // Nút thao tác nhanh ở thanh bên
+        Watchdog watch;  // Giám sát bất thường + gửi Discord
+        TextBox tHook, tHookName, tRetry;  // Webhook Discord, tên máy hiện trong tin nhắn, lịch thử lại (phút)
+        NumericUpDown nWatchSec, nShotMin, nScanSec;  // Chu kỳ kiểm tra (giây), chu kỳ chụp ảnh (phút), chu kỳ quét gửi (giây)
+        CheckBox kAlerts, kAlertShot;  // Gửi cảnh báo, kèm ảnh trong cảnh báo
         bool syncingMap;  // Đang đồng bộ ô tick map phím từ code (không hỏi bật ADB)
         // App được dùng ADB ngay lúc này: người dùng cho phép và ADB trong Android chưa bị tắt
         bool AdbReady { get { return emu.AdbOn && !emu.AdbKilled; } }
@@ -114,6 +118,7 @@ namespace DsoftEmu
             host = HostInfo.Detect();  // Dò phần cứng máy thật
             if (!S.Has("Cores")) { host.ApplyRecommended(S); S.Save(); }  // Lần đầu chạy (chưa có cấu hình): áp cấu hình đề xuất rồi lưu
             emu = new EmulatorController(S, baseDir);  // Tạo bộ điều khiển giả lập
+            watch = new Watchdog(S, emu, () => AdbReady);  // Bộ giám sát + Discord (bắt đầu chạy ở OnLoaded)
             mapper = new KeyMapper(touch);  // Tạo bộ map phím dùng dịch vụ chạm
             mapper.ToggleMacro = ToggleMacro;  // Phím tắt macro trong keymap sẽ gọi ToggleMacro
 
@@ -184,6 +189,7 @@ namespace DsoftEmu
             bSave = SideBtn(side, "⬇  Lưu trạng thái", (s, e) => SaveState(), "Lưu trạng thái hiện tại (Android đứng hình ~10-20s).");
             bLoad = SideBtn(side, "↺  Chạy từ bản lưu", (s, e) => RestartEmu(true), "Tắt rồi bật lại đúng trạng thái đã lưu.");
             bRestart = SideBtn(side, "⟳  Khởi động lại nhanh", (s, e) => RestartEmu(false), "Tắt rồi bật lại bằng Quick Boot, giữ nguyên trạng thái (~20-30s). Dùng khi chạy lâu bị chậm.");
+            bShot = SideBtn(side, "▣  Chụp gửi Discord", (s, e) => ShotToDiscord(), "Chụp màn hình Android và gửi qua webhook Discord (không cần ADB). Cấu hình ở trang Cấu hình.");
             return side;  // Trả về thanh bên
         }
 
@@ -618,6 +624,7 @@ namespace DsoftEmu
             bNet.Enabled = bSave.Enabled = ready && !busy;  // Làm mới mạng / lưu: cần Android sẵn sàng
             bRestart.Enabled = emu.Running && uiOp == 0 && !busy;  // Khởi động lại: chỉ cần emulator đang chạy
             bLoad.Enabled = uiOp == 0 && !busy && emu.HasSave;  // Chạy từ bản lưu: cần có bản lưu (tắt hay bật đều được)
+            bShot.Enabled = ready && !shooting;  // Chụp gửi Discord: cần Android sẵn sàng
 
             bool show = S.GetBool("ShowStats", true) && ready;  // Có hiện số liệu không
             statsLbl.Visible = show;  // Ẩn khi tắt tuỳ chọn hoặc chưa sẵn sàng
@@ -1034,7 +1041,102 @@ namespace DsoftEmu
             store.Controls.Add(sbar);  // Thêm hàng nút
 
             // Ghép các thẻ thành trang cuộn
-            return Stack(Card(null, bar), Card("Nơi lưu dữ liệu (image + máy ảo)", store), Card("Phần cứng máy ảo", grid), Card("Tuỳ chọn", opts));
+            return Stack(Card(null, bar), Card("Nơi lưu dữ liệu (image + máy ảo)", store), Card("Phần cứng máy ảo", grid), Card("Tuỳ chọn", opts),
+                         Card("Discord và giám sát (không cần ADB)", BuildDiscord()));
+        }
+
+        // Thẻ cấu hình Discord webhook + giám sát; bấm "Lưu & áp dụng" là có hiệu lực ngay
+        Control BuildDiscord()
+        {
+            var g = new TableLayoutPanel { ColumnCount = 3, AutoSize = true };  // nhãn | ô nhập | gợi ý
+            Func<string, string, Control, Control> row = (label, hint, c) =>
+            {
+                g.Controls.Add(new Label { Text = label, AutoSize = true, Font = FBold, Margin = new Padding(0, 9, 10, 0) });
+                c.Margin = new Padding(0, 5, 10, 5);
+                g.Controls.Add(c);
+                g.Controls.Add(new Label { Text = hint, AutoSize = true, ForeColor = CMuted, Margin = new Padding(0, 9, 0, 0) });
+                return c;
+            };
+            tHook = (TextBox)row("Webhook URL", "Kênh → Tích hợp → Webhook", new TextBox { Width = 380, Text = S.Get("DiscordWebhook", "") });
+            tHookName = (TextBox)row("Tên máy", "Hiện đầu mỗi tin", new TextBox { Width = 220, Text = S.Get("DiscordName", Environment.MachineName) });
+            nWatchSec = (NumericUpDown)row("Kiểm tra mỗi (giây)", "Nhẹ: 1 ping + 1 lệnh console", Num(10, 600, S.GetInt("WatchSec", 30), 5));
+            nShotMin = (NumericUpDown)row("Chụp ảnh mỗi (phút)", "0 = tắt", Num(0, 1440, S.GetInt("ShotMin", 30), 5));
+            nScanSec = (NumericUpDown)row("Quét gửi mỗi (giây)", "Ảnh chờ trong RAM, luồng nền gửi theo chu kỳ này", Num(2, 300, S.GetInt("SendScanSec", 10), 1));
+            tRetry = (TextBox)row("Thử lại sau (phút)", "Lỗi thì thử lại lần lượt, hết thì bỏ tin", new TextBox { Width = 120, Text = S.Get("RetryMins", "1,3,5") });
+
+            var opts = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true };
+            kAlerts = Chk(opts, "Gửi cảnh báo khi có bất thường (mất mạng, treo, crash, RAM/ổ đĩa sắp hết) và khi hồi phục", S.GetBool("WatchAlerts", true));
+            kAlertShot = Chk(opts, "Kèm ảnh màn hình trong cảnh báo", S.GetBool("WatchAlertShot", true));
+
+            var bar = Row();
+            Btn(bar, "Lưu và áp dụng", (s, e) =>
+            {
+                if (!SaveDiscordUi()) return;
+                Log.I(watch.Enabled ? "Đã lưu Discord. Giám sát đang bật." : "Đã lưu. Chưa khai webhook nên giám sát/Discord đang tắt.");
+            }, CBlue);
+            Button bTest = null;
+            bTest = Btn(bar, "Gửi thử", (s, e) =>
+            {
+                if (!SaveDiscordUi()) return;
+                bTest.Enabled = false;
+                Task.Run(() =>
+                {
+                    string err = watch.SendTest();
+                    Log.I(err == null ? "✔ Đã gửi thử lên Discord." : "✖ Gửi Discord lỗi: " + err);
+                    UI(() => bTest.Enabled = true);
+                });
+            });
+
+            var box = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+            box.Controls.Add(g);
+            box.Controls.Add(opts);
+            box.Controls.Add(bar);
+            box.Controls.Add(new Label
+            {
+                AutoSize = true, ForeColor = CMuted, Margin = new Padding(0, 6, 0, 0),
+                Text = "Chỉ gửi khi trạng thái đổi (mất → có lại), không spam. PC mất mạng thì tin được giữ lại và gửi bù.\r\n" +
+                       "Mạng TRONG Android chỉ kiểm tra được khi ADB bật; ADB tắt thì chỉ biết mạng PC và emulator còn sống.\r\n" +
+                       "Webhook lưu trong settings.ini (không lên git). Ai có URL đều gửi được vào kênh - đừng chia sẻ."
+            });
+            return box;
+        }
+
+        // Lưu thẻ Discord; trả false nếu URL sai
+        bool SaveDiscordUi()
+        {
+            string url = tHook.Text.Trim();
+            if (url.Length > 0 && !Discord.ValidUrl(url))
+            {
+                MessageBox.Show(this, "Webhook không hợp lệ.\r\nCần dạng: https://discord.com/api/webhooks/<id>/<token>", "Discord", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            S.Set("DiscordWebhook", url);
+            S.Set("DiscordName", tHookName.Text.Trim());
+            S.Set("WatchSec", (int)nWatchSec.Value);
+            S.Set("ShotMin", (int)nShotMin.Value);
+            S.Set("SendScanSec", (int)nScanSec.Value);
+            // Lịch thử lại: chỉ giữ số phút hợp lệ, vd "1, 3,5" -> "1,3,5"
+            var mins = tRetry.Text.Split(',', ';', ' ').Select(x => { int v; return int.TryParse(x.Trim(), out v) && v > 0 ? Math.Min(v, 1440) : 0; }).Where(v => v > 0).ToArray();
+            S.Set("RetryMins", string.Join(",", mins));
+            tRetry.Text = string.Join(",", mins);
+            S.Set("WatchAlerts", kAlerts.Checked);
+            S.Set("WatchAlertShot", kAlertShot.Checked);
+            S.Save();
+            return true;
+        }
+
+        volatile bool shooting;  // Đang chụp/gửi (tránh bấm liên tục)
+
+        // Nút thanh bên: chụp và gửi Discord ngay
+        void ShotToDiscord()
+        {
+            if (!watch.Enabled) { MessageBox.Show(this, "Chưa khai webhook Discord. Vào Cấu hình → Discord và giám sát.", "Discord"); ShowPage("config"); return; }
+            shooting = true;
+            Task.Run(() =>
+            {
+                try { if (watch.SendShot("Ảnh chụp thủ công", true)) Log.I("Đã chụp, đưa vào hàng đợi gửi Discord."); }
+                finally { shooting = false; }
+            });
         }
 
         // Nhãn hiển thị nơi lưu và dung lượng
@@ -1317,6 +1419,7 @@ namespace DsoftEmu
             RefreshStorage();  // Tính dung lượng
             CheckAccel();  // Kiểm tra ảo hoá
             timer.Start();  // Bật timer làm mới
+            watch.Start();  // Bật giám sát (chỉ gửi khi đã khai webhook)
             // Mở app khi giả lập đã chạy sẵn: có ADB thì kết nối input, không cho dùng ADB thì tắt nó đi
             if (File.Exists(emu.AdbExe)) Task.Run(() =>
             {
@@ -1339,6 +1442,7 @@ namespace DsoftEmu
                 if (r == DialogResult.Yes) emu.Stop();  // Yes = tắt luôn giả lập
             }
             timer.Stop();  // Dừng timer
+            watch.Stop();  // Dừng giám sát
             MacroRunner.StopAll();  // Dừng tất cả macro
             mapper.Dispose();  // Gỡ hook bàn phím
             var i = touch.Inj;  // Bộ gửi chạm hiện tại
