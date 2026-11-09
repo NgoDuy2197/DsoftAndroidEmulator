@@ -154,7 +154,8 @@ namespace DsoftEmu
                 logBox.AppendText(s + "\r\n");  // Thêm dòng log mới kèm xuống dòng
             });
             MacroRunner.Changed += () => UI(RefreshMacroList);  // Danh sách macro đang chạy thay đổi -> vẽ lại danh sách
-            timer.Tick += (s, e) => { FollowFocus(); RefreshRuntime(); };  // Mỗi nhịp: theo cửa sổ emulator đang focus, cập nhật trạng thái
+            timer.Tick += (s, e) => { FollowFocus(); ApplyEmuTopmost(false); RefreshRuntime(); };  // Mỗi nhịp: theo cửa sổ emulator đang focus, giữ trên cùng, cập nhật trạng thái
+            TopMost = S.GetBool("TopApp", false);  // App luôn trên cùng (nếu bật)
 
             DragEnter += (s, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };  // Kéo file vào: chấp nhận nếu dữ liệu là file
             // Thả file: cài từng file có đuôi .apk
@@ -324,6 +325,25 @@ namespace DsoftEmu
             var m = emus.FirstOrDefault(x => x.Port == port);
             if (m != null && m != emu) SelectMachine(m.Index, false);
         }
+        // Đặt/bỏ "luôn trên cùng" cho cửa sổ emulator của các máy đang chạy.
+        // Gọi mỗi nhịp timer (force=false): chỉ đụng tới cửa sổ khi trạng thái chưa đúng (máy mới bật, cửa sổ mới tạo).
+        // force=true khi người dùng đổi tuỳ chọn: tắt thì bỏ trên cùng cho mọi cửa sổ.
+        void ApplyEmuTopmost(bool force)
+        {
+            bool want = S.GetBool("TopEmu", false);
+            if (!want && !force) return;  // Tắt tuỳ chọn: không cần quét mỗi nhịp
+            foreach (var e in emus)
+            {
+                if (!e.Running) continue;
+                IntPtr h = Watchdog.FindEmuWindow(e.Port);
+                if (h == IntPtr.Zero) continue;
+                bool isTop = (GetWindowLong(h, -20) & 0x8) != 0;  // GWL_EXSTYLE & WS_EX_TOPMOST
+                if (isTop != want)
+                    SetWindowPos(h, want ? new IntPtr(-1) : new IntPtr(-2), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);  // HWND_TOPMOST/NOTOPMOST; NOSIZE|NOMOVE|NOACTIVATE
+            }
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
 
@@ -1188,6 +1208,11 @@ namespace DsoftEmu
             kNoAudio = Chk(opts, "Tắt âm thanh - nhẹ hơn chút", S.GetBool("NoAudio", false));  // Tắt âm thanh
             kStats = Chk(opts, "Hiện tốc độ mạng / ping / FPS ở thanh bên (đọc qua adb mỗi 2 giây)", S.GetBool("ShowStats", true));  // Hiện số liệu
             kStats.CheckedChanged += (s, e) => { S.Set("ShowStats", kStats.Checked); S.Save(); RefreshRuntime(); };  // Áp dụng ngay, không cần bấm Lưu
+            // Luôn trên cùng: áp dụng ngay
+            var kTopApp = Chk(opts, "App Dsoft luôn nằm trên các cửa sổ khác", S.GetBool("TopApp", false));
+            kTopApp.CheckedChanged += (s, e) => { S.Set("TopApp", kTopApp.Checked); S.Save(); TopMost = kTopApp.Checked; };
+            var kTopEmu = Chk(opts, "Cửa sổ giả lập luôn nằm trên các cửa sổ khác (mọi máy đang chạy)", S.GetBool("TopEmu", false));
+            kTopEmu.CheckedChanged += (s, e) => { S.Set("TopEmu", kTopEmu.Checked); S.Save(); ApplyEmuTopmost(true); };
 
             var bar = Row();  // Thanh nút trên cùng
             // Nút Lưu cấu hình
