@@ -69,7 +69,7 @@ namespace DsoftEmu
         readonly StatsPoller stats = new StatsPoller();  // Bộ đọc số liệu qua adb
         volatile bool polling;  // Đang đọc số liệu (tránh chạy chồng)
         DateTime lastPoll = DateTime.MinValue;  // Lần đọc số liệu gần nhất
-        Button bNet, bSave, bRestart, bLoad, bAdb, bShot;  // Nút thao tác nhanh ở thanh bên
+        Button bNet, bSave, bRestart, bLoad, bAdb, bShot, bMax, bDisp;  // Nút thao tác nhanh ở thanh bên
         Watchdog watch;  // Giám sát bất thường + gửi Discord
         TextBox tHook, tHookName, tRetry;  // Webhook Discord, tên máy hiện trong tin nhắn, lịch thử lại (phút)
         NumericUpDown nWatchSec, nShotMin, nScanSec;  // Chu kỳ kiểm tra (giây), chu kỳ chụp ảnh (phút), chu kỳ quét gửi (giây)
@@ -89,7 +89,12 @@ namespace DsoftEmu
         readonly Dictionary<string, Button> checkBtns = new Dictionary<string, Button>();  // Nút sửa lỗi của từng mục kiểm tra
 
         // cấu hình
-        NumericUpDown nCores, nRam, nW, nH, nDpi;  // Ô số: nhân CPU, RAM, rộng, cao, DPI
+        NumericUpDown nCores, nRam, nW, nH, nDpi;  // Ô số: nhân CPU, RAM, rộng, cao, DPI (hồ sơ Mặc định)
+        NumericUpDown nAW, nAH, nADpi, nCW, nCH, nCDpi;  // Hồ sơ Treo máy / Tuỳ chỉnh
+        ComboBox cDisp;  // Hồ sơ hiển thị của máy đang chọn
+        Label lDispFor;  // "Máy N dùng:"
+        EmulatorController dispOf;  // Máy mà cDisp đang hiển thị
+        string dispSeen;  // Hồ sơ của máy đó lúc đồng bộ cDisp lần cuối
         ComboBox cGpu, cDns;  // Ô chọn chế độ GPU, DNS
         CheckBox kQuick, kNoAudio, kNoVulkan, kRestart, kPrio, kBootAnim, kStats;  // Các ô tick tuỳ chọn
         const string DnsAuto = "Theo máy";  // Chữ hiển thị khi dùng DNS của Windows
@@ -199,6 +204,9 @@ namespace DsoftEmu
             bLoad = SideBtn(side, "↺  Chạy từ bản lưu", (s, e) => RestartEmu(true), "Tắt rồi bật lại đúng trạng thái đã lưu.");
             bRestart = SideBtn(side, "⟳  Khởi động lại nhanh", (s, e) => RestartEmu(false), "Tắt rồi bật lại bằng Quick Boot, giữ nguyên trạng thái (~20-30s). Dùng khi chạy lâu bị chậm.");
             bShot = SideBtn(side, "▣  Chụp gửi Discord", (s, e) => ShotToDiscord(), "Chụp màn hình Android và gửi qua webhook Discord (không cần ADB). Cấu hình ở trang Cấu hình.");
+            bMax = SideBtn(side, "⛶  Phóng to cửa sổ", (s, e) => ToggleEmuMax(), "Phóng cửa sổ giả lập của máy đang chọn vừa màn hình (giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
+            bDisp = SideBtn(side, "◐  Hiển thị: Mặc định", (s, e) => ApplyDisplay(emu.Display == "afk" ? "play" : "afk"),
+                "Chuyển máy đang chọn giữa hồ sơ hiển thị Mặc định và Treo máy (độ phân giải thấp, nhẹ máy). Đang chạy thì phải khởi động NGUỘI (game bị đóng). Giá trị ở trang Cấu hình.");
             return side;  // Trả về thanh bên
         }
 
@@ -342,6 +350,35 @@ namespace DsoftEmu
                     SetWindowPos(h, want ? new IntPtr(-1) : new IntPtr(-2), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);  // HWND_TOPMOST/NOTOPMOST; NOSIZE|NOMOVE|NOACTIVATE
             }
         }
+        // ---------- Phóng to cửa sổ giả lập vừa màn hình / trả lại kích thước cũ ----------
+        readonly Dictionary<IntPtr, Rectangle> emuPrevRect = new Dictionary<IntPtr, Rectangle>();  // Kích thước trước khi phóng to (theo cửa sổ)
+
+        void ToggleEmuMax()
+        {
+            var e = emu;
+            IntPtr h = Watchdog.FindEmuWindow(e.Port);
+            if (h == IntPtr.Zero) { Log.I("Không tìm thấy cửa sổ giả lập của " + e.Label + "."); return; }
+            RECT r; if (!GetWindowRect(h, out r)) return;
+            var cur = new Rectangle(r.L, r.T, r.R - r.L, r.B - r.T);
+            Rectangle prev;
+            if (emuPrevRect.TryGetValue(h, out prev))  // Đang phóng to -> trả lại
+            {
+                emuPrevRect.Remove(h);
+                SetWindowPos(h, IntPtr.Zero, prev.X, prev.Y, prev.Width, prev.Height, 0x0004 | 0x0010);  // NOZORDER|NOACTIVATE
+                return;
+            }
+            var wa = System.Windows.Forms.Screen.FromHandle(h).WorkingArea;  // Vùng làm việc của màn hình đang chứa cửa sổ (trừ taskbar)
+            int toolW = 70;  // Chừa chỗ thanh công cụ bên phải cửa sổ emulator
+            double k = Math.Min((double)(wa.Width - toolW) / cur.Width, (double)wa.Height / cur.Height);  // Giữ tỉ lệ
+            int w = (int)(cur.Width * k), hh = (int)(cur.Height * k);
+            int x = wa.Left + (wa.Width - toolW - w) / 2, y = wa.Top + (wa.Height - hh) / 2;  // Căn giữa
+            emuPrevRect[h] = cur;
+            SetWindowPos(h, IntPtr.Zero, x, y, w, hh, 0x0004);  // NOZORDER
+            SetForegroundWindow(h);
+        }
+        struct RECT { public int L, T, R, B; }
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -699,8 +736,9 @@ namespace DsoftEmu
 
             lCurImg.Text = CurImageName;  // Hiện tên bản đang chọn
             // Dòng mô tả: tên máy ảo, nhân, RAM, độ phân giải, GPU
+            int sw, sh, sd; emu.ScreenOf(emu.Display, out sw, out sh, out sd);  // Độ phân giải theo hồ sơ hiển thị của máy
             lCurSub.Text = (emus.Count > 1 ? emu.Label + " · " : "") + "Máy ảo " + emu.AvdName + "  ·  " + S.GetInt("Cores", 4) + " nhân  ·  " + S.GetInt("RamMB", 4096) + " MB RAM  ·  " +
-                           S.GetInt("Width", 1280) + "x" + S.GetInt("Height", 720) + "  ·  GPU " + S.Get("Gpu", "host");  // Phần sau của chuỗi mô tả
+                           sw + "x" + sh + " (" + EmulatorController.DisplayName(emu.Display) + ")  ·  GPU " + S.Get("Gpu", "host");  // Phần sau của chuỗi mô tả
         }
 
         // Cập nhật trạng thái chạy: các nút, nhãn trạng thái, mục "run" và "input"
@@ -798,7 +836,16 @@ namespace DsoftEmu
             bNet.Enabled = bSave.Enabled = ready && !busy;  // Làm mới mạng / lưu: cần Android sẵn sàng
             bRestart.Enabled = emu.Running && uiOp == 0 && !busy;  // Khởi động lại: chỉ cần emulator đang chạy
             bLoad.Enabled = uiOp == 0 && !busy && emu.HasSave;  // Chạy từ bản lưu: cần có bản lưu (tắt hay bật đều được)
-            bShot.Enabled = emus.Any(x => x.IsBooted) && !shooting;  // Chụp gửi Discord: cần ít nhất 1 máy sẵn sàng (ghép ảnh mọi máy)
+            bShot.Enabled = emus.Any(Watchdog.Shootable) && !shooting;  // Chụp gửi Discord: cần ít nhất 1 máy chụp được (ghép ảnh mọi máy)
+            bMax.Enabled = emu.Running;  // Phóng to: cần cửa sổ giả lập
+            bDisp.Enabled = uiOp == 0 && !busy;
+            bDisp.Text = "◐  Hiển thị: " + EmulatorController.DisplayName(emu.Display);
+            if (cDisp != null && (dispOf != emu || dispSeen != emu.Display))  // Đổi máy / đổi hồ sơ (vd từ nút thanh bên) -> ô chọn theo máy đó
+            {
+                dispOf = emu; dispSeen = emu.Display;
+                cDisp.SelectedIndex = Array.IndexOf(EmulatorController.DisplayModes, emu.Display);
+                lDispFor.Text = emus.Count > 1 ? emu.Label + " dùng:" : "Máy ảo dùng:";
+            }
             RefreshMachines();  // Danh sách máy
 
             bool show = S.GetBool("ShowStats", true) && ready;  // Có hiện số liệu không
@@ -1184,12 +1231,6 @@ namespace DsoftEmu
             nCores = (NumericUpDown)row("Nhân CPU", "Máy có " + host.Threads + " luồng, nên để ≤ một nửa", Num(1, Math.Max(1, host.Threads), S.GetInt("Cores", 4), 1));
             // RAM máy ảo, bước 512 MB
             nRam = (NumericUpDown)row("RAM (MB)", "Máy có " + host.RamMB / 1024 + " GB", Num(1024, 16384, S.GetInt("RamMB", 4096), 512));
-            // Chiều rộng màn hình máy ảo
-            nW = (NumericUpDown)row("Rộng", "Rộng > Cao = màn ngang", Num(480, 3840, S.GetInt("Width", 1280), 8));
-            // Chiều cao màn hình máy ảo
-            nH = (NumericUpDown)row("Cao", "", Num(480, 3840, S.GetInt("Height", 720), 8));
-            // Mật độ điểm ảnh
-            nDpi = (NumericUpDown)row("DPI", "Càng cao chữ càng to", Num(120, 640, S.GetInt("Dpi", 240), 20));
             // Chế độ GPU
             cGpu = (ComboBox)row("GPU", "host = nhanh nhất. Nhấp nháy/màn đen: thử swangle (vẽ bằng CPU, chậm hơn)", Combo(emu.GpuMode, EmulatorController.GpuModes));
             cGpu.DropDownStyle = ComboBoxStyle.DropDownList;  // Chỉ cho chọn trong danh sách, tránh gõ sai tên chế độ
@@ -1239,8 +1280,67 @@ namespace DsoftEmu
             store.Controls.Add(sbar);  // Thêm hàng nút
 
             // Ghép các thẻ thành trang cuộn
-            return Stack(Card(null, bar), Card("Nơi lưu dữ liệu (image + máy ảo)", store), Card("Phần cứng máy ảo", grid), Card("Tuỳ chọn", opts),
+            return Stack(Card(null, bar), Card("Nơi lưu dữ liệu (image + máy ảo)", store), Card("Phần cứng máy ảo", grid),
+                         Card("Hiển thị (độ phân giải)", BuildDisplay()), Card("Tuỳ chọn", opts),
                          Card("Discord và giám sát (không cần ADB)", BuildDiscord()));
+        }
+
+        // Thẻ hồ sơ hiển thị: 3 bộ giá trị (Mặc định / Treo máy / Tuỳ chỉnh) + chọn hồ sơ cho máy đang chọn
+        Control BuildDisplay()
+        {
+            var g = new TableLayoutPanel { ColumnCount = 5, AutoSize = true };  // nhãn | rộng | cao | dpi | gợi ý
+            Func<string, Label> head = t => new Label { Text = t, AutoSize = true, ForeColor = CMuted, Margin = new Padding(0, 2, 10, 0) };
+            g.Controls.Add(head("")); g.Controls.Add(head("Rộng")); g.Controls.Add(head("Cao")); g.Controls.Add(head("DPI")); g.Controls.Add(head(""));
+            Action<string, NumericUpDown, NumericUpDown, NumericUpDown, string> line = (label, w, h, d, hint) =>
+            {
+                g.Controls.Add(new Label { Text = label, AutoSize = true, Font = FBold, Margin = new Padding(0, 9, 10, 0) });
+                foreach (var c in new[] { w, h, d }) { c.Width = 80; c.Margin = new Padding(0, 5, 10, 5); g.Controls.Add(c); }
+                g.Controls.Add(new Label { Text = hint, AutoSize = true, ForeColor = CMuted, Margin = new Padding(0, 9, 0, 0) });
+            };
+            int aw, ah, ad, cw, ch, cd;
+            emu.ScreenOf("afk", out aw, out ah, out ad);
+            emu.ScreenOf("custom", out cw, out ch, out cd);
+            nW = Num(320, 3840, S.GetInt("Width", 1280), 8); nH = Num(320, 3840, S.GetInt("Height", 720), 8); nDpi = Num(80, 640, S.GetInt("Dpi", 240), 20);
+            nAW = Num(320, 3840, aw, 8); nAH = Num(320, 3840, ah, 8); nADpi = Num(80, 640, ad, 20);
+            nCW = Num(320, 3840, cw, 8); nCH = Num(320, 3840, ch, 8); nCDpi = Num(80, 640, cd, 20);
+            line("Mặc định", nW, nH, nDpi, "Khi chơi. Rộng > Cao = màn ngang");
+            line("Treo máy", nAW, nAH, nADpi, "Nhẹ máy khi treo. Giữ cùng tỉ lệ (vd 16:9) để map phím / auto click vẫn đúng chỗ");
+            line("Tuỳ chỉnh", nCW, nCH, nCDpi, "Nhập tuỳ ý");
+
+            var bar = Row();
+            lDispFor = new Label { Text = "Máy ảo dùng:", AutoSize = true, Font = FBold, Margin = new Padding(0, 13, 8, 0) };
+            bar.Controls.Add(lDispFor);
+            cDisp = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140, Font = FBase, Margin = new Padding(0, 9, 10, 0) };
+            cDisp.Items.AddRange(EmulatorController.DisplayModes.Select(EmulatorController.DisplayName).ToArray());
+            cDisp.SelectedIndex = Array.IndexOf(EmulatorController.DisplayModes, emu.Display);
+            dispOf = emu; dispSeen = emu.Display;
+            bar.Controls.Add(cDisp);
+            Btn(bar, "Áp dụng", (s, e) => ApplyDisplay(EmulatorController.DisplayModes[Math.Max(0, cDisp.SelectedIndex)]), CBlue);
+            bar.Controls.Add(new Label { AutoSize = true, ForeColor = CMuted, Margin = new Padding(6, 13, 0, 0), Text = "Máy đang chạy sẽ phải khởi động NGUỘI (game bị đóng) để đổi độ phân giải." });
+
+            var box = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+            box.Controls.Add(g); box.Controls.Add(bar);
+            return box;
+        }
+
+        // Đổi hồ sơ hiển thị của máy đang chọn (lưu cả giá trị trên trang Cấu hình); đang chạy thì hỏi khởi động lại
+        void ApplyDisplay(string mode)
+        {
+            var e = emu;
+            if (e.Busy || e.UiOp != 0) return;
+            SaveUi();  // Lấy luôn giá trị rộng/cao/DPI đang nhập
+            bool changed = e.Display != mode;
+            e.Display = mode;
+            int w, h, d; e.ScreenOf(mode, out w, out h, out d);
+            Log.I((emus.Count > 1 ? e.Label + ": " : "") + "Hiển thị " + EmulatorController.DisplayName(mode) + " " + w + "x" + h + " DPI " + d + ".");
+            RefreshAll();
+            if (!e.Running) { Log.I("Áp dụng ở lần ▶ Chạy tới."); return; }
+            // Đã thử: đổi độ phân giải thì emulator không nạp được trạng thái Quick Boot ("cannot load snapshot") -> boot nguội
+            if (MessageBox.Show(this, "Khởi động lại " + e.Label + " ngay để áp dụng " + w + "x" + h + " DPI " + d + "?\r\n\r\n" +
+                    "Đổi độ phân giải thì Quick Boot KHÔNG giữ được trạng thái: Android sẽ khởi động nguội (~1-2 phút), game đang mở sẽ bị đóng." +
+                    (changed ? "" : "\r\n\r\n(Hồ sơ không đổi - chỉ cần khi bạn vừa sửa giá trị.)"),
+                    "Đổi hiển thị", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) { Log.I("Áp dụng ở lần khởi động lại tới."); return; }
+            RestartEmu(false);
         }
 
         // Thẻ cấu hình Discord webhook + giám sát; bấm "Lưu & áp dụng" là có hiệu lực ngay
@@ -1420,6 +1520,8 @@ namespace DsoftEmu
             S.Set("Width", (int)nW.Value);  // Rộng
             S.Set("Height", (int)nH.Value);  // Cao
             S.Set("Dpi", (int)nDpi.Value);  // DPI
+            S.Set("AfkWidth", (int)nAW.Value); S.Set("AfkHeight", (int)nAH.Value); S.Set("AfkDpi", (int)nADpi.Value);  // Hồ sơ Treo máy
+            S.Set("CustomWidth", (int)nCW.Value); S.Set("CustomHeight", (int)nCH.Value); S.Set("CustomDpi", (int)nCDpi.Value);  // Hồ sơ Tuỳ chỉnh
             S.Set("Gpu", cGpu.Text.Trim());  // GPU
             S.Set("Dns", cDns.Text.Trim() == DnsAuto ? "" : cDns.Text.Trim().Replace(" ", ""));  // DNS: "Theo máy" lưu thành rỗng
             S.Set("ExtraArgs", tExtra.Text.Trim());  // Tham số thêm

@@ -35,6 +35,20 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             return Proc.Run(Exe, "-P " + ServerPort + " devices", 8000, null).Contains(Serial + "\tdevice");
         }
 
+        // Trạng thái thiết bị trong "adb devices": "device" (online), "offline", "unauthorized"... hoặc "" nếu không thấy
+        public string State()
+        {
+            foreach (var l in Proc.Run(Exe, "-P " + ServerPort + " devices", 8000, null).Split('\n'))
+            {
+                var p = l.Trim().Split('\t');
+                if (p.Length >= 2 && p[0] == Serial) return p[1].Trim();
+            }
+            return "";
+        }
+
+        // Ép adb server kết nối lại các thiết bị đang kẹt "offline" (hay gặp khi cổng adb nằm ngoài dải 5555-5585)
+        public void ReconnectOffline() { Proc.Run(Exe, "-P " + ServerPort + " reconnect offline", 10000, null); }
+
         // Kiểm tra Android đã boot xong chưa
         public bool Booted()
         {
@@ -241,6 +255,29 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             };
         }
 
+        // ---------- Hồ sơ hiển thị: play = Mặc định (Width/Height/Dpi), afk = Treo máy (nhẹ), custom = Tuỳ chỉnh ----------
+        public static readonly string[] DisplayModes = { "play", "afk", "custom" };
+        public static string DisplayName(string mode) { return mode == "afk" ? "Treo máy" : mode == "custom" ? "Tuỳ chỉnh" : "Mặc định"; }
+        // Hồ sơ của máy này (riêng từng máy)
+        public string Display
+        {
+            get { string d = S.Get(K("Display"), "play"); return Array.IndexOf(DisplayModes, d) >= 0 ? d : "play"; }
+            set { S.Set(K("Display"), value); S.Save(); }
+        }
+        // Kích thước + DPI của một hồ sơ (giá trị dùng chung mọi máy)
+        public void ScreenOf(string mode, out int w, out int h, out int dpi)
+        {
+            int pw = S.GetInt("Width", 1280), ph = S.GetInt("Height", 720);
+            if (mode == "afk")
+            {
+                // Mặc định 960x540 (cùng hướng ngang/dọc với hồ sơ Mặc định)
+                w = S.GetInt("AfkWidth", pw >= ph ? 960 : 540); h = S.GetInt("AfkHeight", pw >= ph ? 540 : 960);
+                dpi = S.GetInt("AfkDpi", 160);
+            }
+            else if (mode == "custom") { w = S.GetInt("CustomWidth", pw); h = S.GetInt("CustomHeight", ph); dpi = S.GetInt("CustomDpi", S.GetInt("Dpi", 240)); }
+            else { w = pw; h = ph; dpi = S.GetInt("Dpi", 240); }
+        }
+
         // Ghi file config.ini và <tên>.ini cho AVD theo cấu hình hiện tại
         public void CreateAvd()
         {
@@ -249,7 +286,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
 
             string avdDir = Path.Combine(AvdHome, AvdName + ".avd"); // Thư mục máy ảo
             Directory.CreateDirectory(avdDir); // Tạo thư mục nếu chưa có
-            int w = S.GetInt("Width", 1280), h = S.GetInt("Height", 720); // Độ phân giải màn hình
+            int w, h, dpi; ScreenOf(Display, out w, out h, out dpi); // Độ phân giải theo hồ sơ hiển thị của máy này
             bool play = Tag.Contains("playstore"); // Có Google Play hay không
 
             var c = new StringBuilder(); // Bộ đệm nội dung config.ini
@@ -265,7 +302,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             kv("vm.heapSize", 512); // Heap tối đa của máy ảo Java (MB)
             kv("hw.lcd.width", w); // Chiều rộng màn hình
             kv("hw.lcd.height", h); // Chiều cao màn hình
-            kv("hw.lcd.density", S.GetInt("Dpi", 240)); // Mật độ điểm ảnh (DPI)
+            kv("hw.lcd.density", dpi); // Mật độ điểm ảnh (DPI)
             kv("hw.initialOrientation", w > h ? "landscape" : "portrait"); // Hướng màn hình: ngang nếu rộng > cao
             kv("hw.gpu.enabled", "yes"); // Bật tăng tốc GPU
             kv("hw.gpu.mode", GpuMode); // Chế độ GPU (host = dùng card đồ hoạ thật)
@@ -291,7 +328,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             File.WriteAllText(Path.Combine(AvdHome, AvdName + ".ini"),
                 "avd.ini.encoding=UTF-8\r\npath=" + avdDir + "\r\npath.rel=avd\\" + AvdName + ".avd\r\ntarget=android-" + Api + "\r\n");
             // Ghi log tóm tắt cấu hình vừa ghi
-            LogI("✔ Đã ghi AVD '" + AvdName + "' (" + w + "x" + h + ", " + S.GetInt("Cores", 4) + " nhân, " + S.GetInt("RamMB", 4096) + " MB)");
+            LogI("✔ Đã ghi AVD '" + AvdName + "' (" + DisplayName(Display) + " " + w + "x" + h + " DPI " + dpi + ", " + S.GetInt("Cores", 4) + " nhân, " + S.GetInt("RamMB", 4096) + " MB)");
         }
 
         // Kiểm tra máy có hỗ trợ tăng tốc phần cứng (WHPX/AEHD...) hay không
@@ -459,7 +496,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             // Muốn dùng ADB mà bản Quick Boot đang tắt ADB -> chỉ cold boot mới bật lại được
             if (AdbOn && AdbKilled && snapshot == null && !cold) { cold = true; LogI("ADB đang tắt trong trạng thái đã lưu -> khởi động nguội để bật lại ADB."); }
             if (snapshot != null) AdbKilled = S.GetBool(K("SaveAdbKilled"), false); // Bản lưu mang theo trạng thái ADB lúc lưu
-            Interlocked.Exchange(ref snapLoadTicks, 0); snapFailed = false; // Xoá dấu hiệu nạp snapshot của lần trước
+            Interlocked.Exchange(ref snapLoadTicks, 0); snapFailed = false; bootDone = false; // Xoá dấu hiệu nạp snapshot / boot của lần trước
             if (snapshot != null) a.Append(" -snapshot ").Append(snapshot).Append(" -no-snapshot-save"); // Nạp bản lưu, tắt thì không ghi đè nó
             else if (!S.GetBool("QuickBoot", true)) a.Append(" -no-snapshot"); // -no-snapshot: không nạp và không lưu snapshot
             else if (cold) a.Append(" -no-snapshot-load"); // -no-snapshot-load: không nạp snapshot (vẫn lưu khi tắt)
@@ -481,6 +518,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 lock (logLock) { try { if (logW != null) logW.WriteLine(line); } catch { } } // Ghi dòng vào emulator.log, bỏ qua lỗi
                 // Dấu hiệu khôi phục trạng thái: dùng để biết Android sẵn sàng khi ADB tắt (không hỏi được qua adb)
                 if (line.Contains("Successfully loaded snapshot")) Interlocked.Exchange(ref snapLoadTicks, DateTime.Now.Ticks);
+                else if (line.Contains("Boot completed in")) bootDone = true; // Emulator tự báo Android boot xong (không cần hỏi adb)
                 else if (line.Contains("Failed to load snapshot")) snapFailed = true; // Nạp lỗi -> emulator chuyển sang cold boot (ADB bật lại)
                 string u = line.ToUpperInvariant(); // Chuyển chữ hoa để so khớp không phân biệt hoa thường
                 if (u.Contains("ERROR") || u.Contains("FATAL") || u.Contains("PANIC")) ShowEmuError(line); // Chỉ đẩy dòng lỗi lên log giao diện (có giới hạn)
@@ -495,60 +533,105 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             new Thread(() => BootWatch(p)) { IsBackground = true }.Start(); // Chạy luồng nền theo dõi quá trình boot
         }
 
-        // Luồng nền: nâng ưu tiên CPU cho qemu và chờ Android boot xong
+        // Nâng ưu tiên CPU cho các tiến trình qemu-system-*; true nếu đã tìm thấy ít nhất 1 tiến trình
+        bool RaiseQemuPriority()
+        {
+            bool found = false;
+            foreach (var q in Process.GetProcesses()) // Duyệt mọi tiến trình đang chạy
+            {
+                try
+                {
+                    if (!q.ProcessName.StartsWith("qemu-system", StringComparison.OrdinalIgnoreCase)) continue; // Chỉ lõi qemu của emulator
+                    found = true;
+                    if (q.PriorityClass == ProcessPriorityClass.AboveNormal) continue; // Đã đặt rồi
+                    q.PriorityClass = ProcessPriorityClass.AboveNormal; // Đặt mức ưu tiên CPU trên trung bình
+                    LogI("Đặt ưu tiên CPU AboveNormal cho " + q.ProcessName + " (pid " + q.Id + ")");
+                }
+                catch { } // Bỏ qua tiến trình không có quyền truy cập
+            }
+            return found;
+        }
+
+        // Báo "sẵn sàng" ngay khi có dấu hiệu đầu tiên (để chụp màn hình / gửi Discord dùng được sớm)
+        void MarkReady(DateTime t0, string how)
+        {
+            autoRestarts = 0; // Khởi động thành công -> đặt lại bộ đếm tự khởi động lại
+            IsBooted = true;
+            LogI("✔ Android đã sẵn sàng sau " + (int)(DateTime.Now - t0).TotalSeconds + "s (" + how + ")");
+            var h = Booted; // Sao chép delegate để tránh race khi gọi
+            if (h != null) try { h(); } catch (Exception ex) { LogI("Lỗi xử lý sự kiện boot: " + ex.Message); }
+        }
+
+        /// <summary>Luồng nền: nâng ưu tiên CPU cho qemu, báo sẵn sàng sớm nhất có thể, rồi (nếu cần) tắt ADB ở nền.
+        /// Dấu hiệu sẵn sàng (cái nào tới trước): adb báo sys.boot_completed=1 | emulator in "Boot completed in" |
+        /// emulator in "Successfully loaded snapshot". Không bỏ cuộc sau 400s: vẫn thử tiếp (thưa hơn) tới khi emulator thoát.</summary>
         void BootWatch(Process p)
         {
-            Thread.Sleep(6000); // Chờ 6 giây cho tiến trình qemu khởi tạo
-            if (S.GetBool("HighPriority", true)) // Nếu bật tuỳ chọn ưu tiên cao
-                foreach (var q in Process.GetProcesses()) // Duyệt mọi tiến trình đang chạy
+            var adb = NewAdb(); // adb nhắm vào emulator
+            var t0 = DateTime.Now; // Mốc bắt đầu chờ
+            bool ready = false, prioDone = !S.GetBool("HighPriority", true), slowWarned = false, killWarned = false, reconnLogged = false;
+            DateTime readyAt = DateTime.MinValue, lastReconn = t0;
+            bool killedInSave = AdbKilled; // Trạng thái ADB ghi nhận trong bản Quick Boot / bản lưu sắp nạp
+            Thread.Sleep(2000);
+            while (!p.HasExited)
+            {
+                var now = DateTime.Now;
+                double sec = (now - t0).TotalSeconds;
+                if (!prioDone && sec >= 4) prioDone = RaiseQemuPriority() || sec > 60; // qemu có thể chưa kịp sinh ra -> thử lại
+
+                string st = adb.State(); // "device" | "offline" | "" ...
+                if (st == "device" && adb.Shell("getprop sys.boot_completed", 5000).Trim() == "1")
                 {
-                    try
+                    if (!ready) { ready = true; readyAt = now; AdbKilled = false; MarkReady(t0, "adb"); }
+                    // adb hay rớt "offline" ngay sau boot_completed lần đầu -> xác nhận lần 2 rồi mới tắt ADB
+                    if (Sleep(3000) && adb.Booted())
                     {
-                        // Tìm tiến trình lõi qemu-system-* của emulator
-                        if (q.ProcessName.StartsWith("qemu-system", StringComparison.OrdinalIgnoreCase))
-                        {
-                            q.PriorityClass = ProcessPriorityClass.AboveNormal; // Đặt mức ưu tiên CPU trên trung bình
-                            LogI("Đặt ưu tiên CPU AboveNormal cho " + q.ProcessName + " (pid " + q.Id + ")"); // Ghi log
-                        }
+                        AdbKilled = false; // ADB đang chạy
+                        if (!AdbOn) KillAdb(); // Người dùng không cho dùng ADB -> tắt (ở nền, sau khi đã báo sẵn sàng)
+                        return;
                     }
-                    catch { } // Bỏ qua tiến trình không có quyền truy cập
+                    continue;
                 }
 
-            var adb = NewAdb(); // Tạo adb nhắm vào emulator
-            var t0 = DateTime.Now; // Mốc thời gian bắt đầu chờ
-            while ((DateTime.Now - t0).TotalSeconds < 400 && !p.HasExited) // Chờ tối đa 400 giây khi emulator còn chạy
-            {
-                // adb hay rớt "offline" ngay sau boot_completed lần đầu -> cần 2 lần OK liên tiếp
-                if (adb.Booted() && Sleep(3000) && adb.Booted()) // Kiểm tra 2 lần cách nhau 3 giây
+                long sl = Interlocked.Read(ref snapLoadTicks); // Thời điểm nạp snapshot xong (0 = chưa thấy)
+                bool snapOk = sl != 0 && !snapFailed;
+                if (!ready && (bootDone || snapOk))
                 {
-                    autoRestarts = 0; // Boot thành công -> đặt lại bộ đếm tự khởi động lại
-                    AdbKilled = false; // ADB đang chạy
-                    LogI("✔ Android đã boot xong sau " + (int)(DateTime.Now - t0).TotalSeconds + "s"); // Ghi log thời gian boot
-                    if (!AdbOn) KillAdb(); // Người dùng không cho dùng ADB -> tắt ngay
-                    IsBooted = true; // Đánh dấu đã boot
-                    var h = Booted; // Sao chép delegate để tránh race khi gọi
-                    if (h != null) h(); // Phát sự kiện Booted
-                    return; // Kết thúc luồng
+                    ready = true; readyAt = now;
+                    MarkReady(t0, bootDone ? "emulator báo boot xong" : "khôi phục trạng thái");
                 }
-                // ADB tắt sẵn trong trạng thái được khôi phục: nạp snapshot xong + 10 giây mà vẫn không có adb -> coi như sẵn sàng
-                long st = Interlocked.Read(ref snapLoadTicks); // Thời điểm nạp snapshot xong (0 = chưa thấy)
-                if (st != 0 && !snapFailed && (DateTime.Now - new DateTime(st)).TotalSeconds > 10 && !adb.Online())
+
+                if (ready)
                 {
-                    autoRestarts = 0; // Coi như khởi động thành công
-                    AdbKilled = true; // ADB đang tắt
-                    IsBooted = true; // Đánh dấu đã sẵn sàng
-                    LogI("✔ Android đã sẵn sàng (khôi phục trạng thái, ADB đang tắt)"); // Ghi log
-                    var h = Booted; // Sao chép delegate
-                    if (h != null) h(); // Phát sự kiện Booted
-                    return; // Kết thúc luồng
+                    // Trạng thái nạp lại đã tắt ADB sẵn: 10s sau khi nạp mà adb vẫn không online -> không cần làm gì thêm
+                    if (snapOk && killedInSave && st != "device" && (now - new DateTime(sl)).TotalSeconds > 10) { AdbKilled = true; return; }
+                    if (AdbOn && (now - readyAt).TotalMinutes > 10) return; // Dùng ADB: hết 10 phút vẫn không online thì thôi chờ
+                    if (!AdbOn && !killWarned && (now - readyAt).TotalMinutes > 10)
+                    {
+                        killWarned = true; // Vẫn thử tiếp, chỉ cảnh báo 1 lần
+                        LogI("⚠ Android đã chạy nhưng adb chưa kết nối được nên CHƯA tắt được ADB. Bấm ⟳ Khởi động lại nhanh nếu lo game phát hiện.");
+                    }
                 }
-                Thread.Sleep(2000); // Chưa xong, chờ 2 giây rồi thử lại
+                else if (!slowWarned && sec > 400)
+                {
+                    slowWarned = true;
+                    LogI("⚠ Sau 400s vẫn chưa thấy Android boot xong - vẫn tiếp tục kiểm tra. Xem logs\\emulator.log");
+                }
+
+                // adb kẹt "offline" (cổng ngoài dải chuẩn): ép kết nối lại mỗi 15s
+                if (st == "offline" && (now - lastReconn).TotalSeconds >= 15 && !(ready && killedInSave && snapOk))
+                {
+                    lastReconn = now;
+                    if (!reconnLogged) { reconnLogged = true; LogI("adb đang offline -> thử kết nối lại (adb reconnect offline)"); }
+                    adb.ReconnectOffline();
+                }
+                Thread.Sleep(sec < 400 ? 2000 : 10000); // Quá 400s thì kiểm tra thưa hơn cho nhẹ
             }
-            if (!p.HasExited) LogI("⚠ Quá thời gian chờ boot. Xem logs\\emulator.log"); // Hết giờ mà emulator vẫn chạy -> cảnh báo
         }
 
         long snapLoadTicks; // Thời điểm emulator in "Successfully loaded snapshot" (ticks, 0 = chưa thấy)
         volatile bool snapFailed; // Emulator báo nạp snapshot lỗi
+        volatile bool bootDone; // Emulator in "Boot completed in ... ms"
 
         // Ngủ ms mili-giây rồi trả về true (để dùng được trong biểu thức &&)
         static bool Sleep(int ms) { Thread.Sleep(ms); return true; }

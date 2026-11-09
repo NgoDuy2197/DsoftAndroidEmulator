@@ -211,7 +211,7 @@ namespace DsoftEmu // Không gian tên chung của app
             if (ShotMin > 0 && now >= nextShot)
             {
                 nextShot = now.AddMinutes(ShotMin);
-                if (all.Any(e => e.IsBooted)) SendShot("Ảnh định kỳ (mỗi " + ShotMin + " phút)", false);
+                if (all.Any(Shootable)) SendShot("Ảnh định kỳ (mỗi " + ShotMin + " phút)", false);
             }
 
             if (now < nextCheck) return;
@@ -341,15 +341,33 @@ namespace DsoftEmu // Không gian tên chung của app
         public bool SendShot(string caption, bool now)
         {
             var m = new Msg { At = DateTime.Now, Icon = "📷", Text = caption };
-            foreach (var e in All.Where(x => x.IsBooted))
-            {
-                var png = TakeShot(e, false);
-                if (png != null) m.Shots.Add(new Shot { Label = e.Label, Png = png });
-                else Log.I("Không chụp được màn hình " + e.Label + ".");
-            }
+            ShootAll(m, true);
             if (m.Shots.Count == 0) return false;
             Enqueue(m, now);
             return true;
+        }
+
+        // Máy chụp được: đã sẵn sàng, hoặc đang chạy >= 30s (console chụp được cả khi app chưa xác nhận boot)
+        public static bool Shootable(EmulatorController e)
+        {
+            return e.Running && (e.IsBooted || (DateTime.Now - e.StartedAt).TotalSeconds >= 30);
+        }
+
+        // Chụp mọi máy chụp được vào m; máy chưa xác nhận boot thì ghi chú thêm
+        void ShootAll(Msg m, bool logFail)
+        {
+            var notReady = new List<string>();
+            foreach (var e in All.Where(Shootable))
+            {
+                var png = TakeShot(e, false);
+                if (png != null)
+                {
+                    m.Shots.Add(new Shot { Label = e.Label, Png = png });
+                    if (!e.IsBooted) notReady.Add(e.Label);
+                }
+                else if (logFail) Log.I("Không chụp được màn hình " + e.Label + ".");
+            }
+            if (notReady.Count > 0) m.Text += " · " + string.Join(", ", notReady) + " đang khởi động (chưa xác nhận boot)";
         }
 
         /// <summary>Gửi thử trực tiếp (không qua hàng đợi), trả null nếu thành công.</summary>
@@ -357,12 +375,8 @@ namespace DsoftEmu // Không gian tên chung của app
         {
             if (!Enabled) return "Webhook không hợp lệ (cần dạng https://discord.com/api/webhooks/...)";
             var m = new Msg { At = DateTime.Now, Icon = "✅", Text = "Gửi thử từ DsoftEmu" };
-            foreach (var e in All.Where(x => x.IsBooted))
-            {
-                var png = TakeShot(e, false);
-                if (png != null) m.Shots.Add(new Shot { Label = e.Label, Png = png });
-            }
-            if (m.Shots.Count == 0) m.Text += " (chưa có máy nào chạy nên không kèm ảnh)";
+            ShootAll(m, false);
+            if (m.Shots.Count == 0) m.Text += All.Any(x => x.Running) ? " (máy vừa bật / chưa chụp được nên không kèm ảnh)" : " (chưa có máy nào chạy nên không kèm ảnh)";
             Build(new List<Msg> { m }, m);
             int code; double ra;
             return Discord.Send(Url, m.Body, m.Img, m.ImgName, out code, out ra);
