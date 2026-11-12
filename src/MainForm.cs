@@ -159,7 +159,7 @@ namespace DsoftEmu
                 logBox.AppendText(s + "\r\n");  // Thêm dòng log mới kèm xuống dòng
             });
             MacroRunner.Changed += () => UI(RefreshMacroList);  // Danh sách macro đang chạy thay đổi -> vẽ lại danh sách
-            timer.Tick += (s, e) => { FollowFocus(); ApplyEmuTopmost(false); RefreshRuntime(); };  // Mỗi nhịp: theo cửa sổ emulator đang focus, giữ trên cùng, cập nhật trạng thái
+            timer.Tick += (s, e) => { FollowFocus(); ApplyEmuTopmost(false); SweepAdbServer(); RefreshRuntime(); };  // Mỗi nhịp: theo cửa sổ emulator đang focus, giữ trên cùng, cập nhật trạng thái
             TopMost = S.GetBool("TopApp", false);  // App luôn trên cùng (nếu bật)
 
             DragEnter += (s, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };  // Kéo file vào: chấp nhận nếu dữ liệu là file
@@ -236,6 +236,7 @@ namespace DsoftEmu
             var e = new EmulatorController(S, baseDir, emus.Count);
             emus.Add(e);
             EmulatorController.Count = emus.Count;
+            EmulatorController.SetAll(emus);
             // Android boot xong -> đánh dấu sẵn sàng; chỉ kết nối input khi đó là máy đang chọn và được dùng ADB
             e.Booted += () => { e.Ready = true; if (e == emu && AdbReady) Task.Run(() => ConnectInput()); UI(RefreshAll); };
             e.Stopped += () => { e.Ready = false; UI(RefreshAll); };  // Máy tắt -> xoá cờ sẵn sàng
@@ -417,6 +418,7 @@ namespace DsoftEmu
             if (sel == e.Index) SelectMachine(0, true);
             emus.Remove(e);
             EmulatorController.Count = emus.Count;
+            EmulatorController.SetAll(emus);
             S.Set("Instances", emus.Count); S.Save();
             BuildMachineList();
             Bg("Xoá " + e.Label, e.DeleteOwnAvd);
@@ -952,6 +954,7 @@ namespace DsoftEmu
                     touch.Scr.Detach();  // Dừng đọc kích thước màn hình qua adb
                 }
                 if (alive) e.KillAdb();  // Tắt adbd trong Android
+                e.ReleaseAdbIfIdle();  // Không máy nào cần ADB nữa -> tắt adb server riêng
             });
         }
 
@@ -1724,19 +1727,43 @@ namespace DsoftEmu
             timer.Start();  // Bật timer làm mới
             watch.Start();  // Bật giám sát (chỉ gửi khi đã khai webhook)
             // Mở app khi giả lập đã chạy sẵn: có ADB thì kết nối input, không cho dùng ADB thì tắt nó đi
+            // Chỉ gọi adb khi cổng console của máy đó đang mở (emulator thật sự đang chạy) - không thì KHÔNG bật adb server
             if (File.Exists(emu.AdbExe))
                 foreach (var e0 in emus.ToList())
                 {
                     var e = e0;
                     Task.Run(() =>
                     {
-                        if (!e.NewAdb().Booted()) return;  // Máy này chưa có Android chạy sẵn
-                        e.Ready = true;  // Android đang chạy
-                        e.AdbKilled = false;  // ADB đang chạy
-                        if (!e.AdbOn) e.KillAdb(); else if (e == emu) ConnectInput();  // Tắt ADB, hoặc nối input nếu là máy đang chọn
-                        UI(RefreshAll);  // Làm mới giao diện
+                        if (!AdbServer.Listening(e.Port)) return;  // Không có emulator ở cổng này -> không đụng adb
+                        if (!(e.EmuConsole("ping", 5000) ?? "").Contains("OK")) return;  // Cổng mở nhưng không phải console emulator
+                        e.Adopted = true;  // Emulator chạy sẵn từ phiên trước
+                        try
+                        {
+                            if (e.AdbKilled) return;  // ADB đã tắt sẵn trong Android: hỏi adb cũng không được -> không bật server
+                            if (!e.NewAdb().Booted()) return;  // Android chưa chạy xong / adb không kết nối
+                            e.Ready = true;  // Android đang chạy
+                            e.AdbKilled = false;  // ADB đang chạy
+                            if (!e.AdbOn) e.KillAdb(); else if (e == emu) ConnectInput();  // Tắt ADB, hoặc nối input nếu là máy đang chọn
+                            UI(RefreshAll);  // Làm mới giao diện
+                        }
+                        finally { e.ReleaseAdbIfIdle(); }  // Không máy nào cần ADB -> tắt adb server riêng
                     });
                 }
+        }
+
+        // Mỗi 15s: còn máy chạy -> giữ adb server riêng ở chế độ không nhận USB (thay server thường nếu emulator lỡ bật);
+        // không còn máy nào -> tắt server. Rẻ: thường chỉ kiểm tra tiến trình server của app còn sống.
+        DateTime nextAdbSweep = DateTime.MinValue;
+        volatile bool sweeping;
+        void SweepAdbServer()
+        {
+            if (sweeping || DateTime.Now < nextAdbSweep || emus.Count == 0) return;
+            nextAdbSweep = DateTime.Now.AddSeconds(15);
+            var e = emu;
+            bool anyRun = emus.Any(x => x.NeedsAdbServer);
+            if (!anyRun && !AdbServer.Listening(e.AdbServerPort)) return;  // Không máy, không server -> không làm gì
+            sweeping = true;
+            Task.Run(() => { try { e.MaintainAdbServer(); } catch { } finally { sweeping = false; } });
         }
 
         // Xử lý khi đóng form: hỏi tắt giả lập, dừng macro, giải phóng tài nguyên
@@ -1756,6 +1783,8 @@ namespace DsoftEmu
             mapper.Dispose();  // Gỡ hook bàn phím
             var i = touch.Inj;  // Bộ gửi chạm hiện tại
             if (i != null) i.Dispose();  // Giải phóng nếu có
+            // Thoát app: máy nào còn chạy (người dùng chọn không tắt) mà vẫn cần ADB thì giữ server, còn lại tắt hẳn adb.exe của app
+            if (emus.Count > 0) try { emus[0].ReleaseAdbIfIdle(); } catch { }
         }
     }
 }

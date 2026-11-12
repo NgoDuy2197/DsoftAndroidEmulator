@@ -194,6 +194,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         public AdbTouch(Adb adb, Screen scr)
         {
             this.scr = scr; // Lưu đối tượng màn hình
+            adb.EnsureServer(); // Server riêng ở chế độ không nhận USB
             sh = Proc.Start(adb.Exe, adb.Target + " shell", null, null, true); // Khởi chạy "adb -s <serial> shell"
             Log.I("Input: adb shell input (dự phòng, chậm)"); // Ghi log phương thức đang dùng
         }

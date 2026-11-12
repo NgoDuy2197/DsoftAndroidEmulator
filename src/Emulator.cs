@@ -8,6 +8,92 @@ using System.Threading; // Thread, Thread.Sleep cho luồng theo dõi boot
 
 namespace DsoftEmu // Không gian tên chung của ứng dụng
 {
+    /// <summary>adb server RIÊNG của app (cổng 5038).
+    /// Mọi adb server (kể cả cổng khác 5037) mặc định chiếm MỌI điện thoại cắm USB -> scrcpy/adb khác không thấy máy.
+    /// Nên server riêng luôn được chạy với "--one-device dsoft-no-usb" (serial không tồn tại = không nhận USB nào; emulator vẫn kết nối bình thường),
+    /// và được tắt hẳn (kill-server) khi không còn máy ảo nào cần ADB.</summary>
+    public static class AdbServer
+    {
+        public const string NoUsb = "dsoft-no-usb"; // Serial giả cho --one-device
+        static readonly object lk = new object();
+        static Process own; // Server do app chạy (server nodaemon = tiến trình con, biết chắc có cờ --one-device)
+
+        // Có tiến trình nào đang nghe cổng này trên máy không
+        public static bool Listening(int port)
+        {
+            try { return System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(ep => ep.Port == port); }
+            catch { return false; }
+        }
+
+        // Các adb.exe đang làm server ở cổng port: (pid, có cờ --one-device không)
+        static List<KeyValuePair<int, bool>> Servers(int port)
+        {
+            var r = new List<KeyValuePair<int, bool>>();
+            try
+            {
+                using (var q = new System.Management.ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='adb.exe'"))
+                    foreach (System.Management.ManagementObject o in q.Get())
+                    {
+                        string cl = (o["CommandLine"] as string) ?? "";
+                        if (cl.IndexOf("fork-server", StringComparison.Ordinal) < 0 && cl.IndexOf("nodaemon", StringComparison.Ordinal) < 0) continue; // Lệnh client (kể cả kill-server), không phải server
+                        if (cl.IndexOf("tcp:" + port, StringComparison.Ordinal) < 0 && cl.IndexOf("-P " + port, StringComparison.Ordinal) < 0) continue;
+                        r.Add(new KeyValuePair<int, bool>(Convert.ToInt32(o["ProcessId"]), cl.Contains("--one-device")));
+                    }
+            }
+            catch { }
+            return r;
+        }
+
+        static bool WaitListening(int port, bool want, int ms)
+        {
+            for (int i = 0; i < ms / 100; i++) { if (Listening(port) == want) return true; Thread.Sleep(100); }
+            return Listening(port) == want;
+        }
+
+        /// <summary>Bảo đảm server riêng đang chạy ở chế độ không nhận USB. Gọi trước mọi lệnh adb cần server.</summary>
+        public static void Ensure(string exe, int port)
+        {
+            var o = own;
+            if (o != null && !o.HasExited) return; // Đường nhanh: server của app đang sống
+            lock (lk)
+            {
+                if (own != null && !own.HasExited) return;
+                own = null;
+                if (Listening(port))
+                {
+                    var sv = Servers(port);
+                    var good = sv.FirstOrDefault(x => x.Value);
+                    if (good.Key != 0 && sv.Count == 1) { try { own = Process.GetProcessById(good.Key); return; } catch { } } // Server có cờ từ phiên trước -> dùng tiếp
+                    // Server không có cờ (do emulator/lệnh adb tự bật) -> sẽ chiếm USB của điện thoại: tắt đi
+                    Log.I("adb server cổng " + port + " đang nhận cả thiết bị USB -> khởi động lại ở chế độ chỉ dùng cho máy ảo.");
+                    Proc.Run(exe, "-P " + port + " kill-server", 10000, null);
+                    WaitListening(port, false, 3000);
+                }
+                var psi = new ProcessStartInfo(exe, "-P " + port + " --one-device " + NoUsb + " server nodaemon")
+                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                p.OutputDataReceived += (s, e) => { };
+                p.ErrorDataReceived += (s, e) => { }; // Đọc bỏ để server không bị nghẽn pipe
+                p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine();
+                own = p;
+                WaitListening(port, true, 5000);
+            }
+        }
+
+        /// <summary>Tắt hẳn server riêng (kill-server). Lệnh "adb emu" vẫn chạy được vì nối thẳng cổng console, không qua server.</summary>
+        public static bool Release(string exe, int port)
+        {
+            lock (lk)
+            {
+                bool was = Listening(port);
+                if (was) Proc.Run(exe, "-P " + port + " kill-server", 10000, null);
+                var o = own; own = null;
+                if (o != null) try { if (!o.WaitForExit(3000)) o.Kill(); } catch { }
+                return was;
+            }
+        }
+    }
+
     // Lớp bọc adb.exe: chạy lệnh adb nhắm vào một thiết bị (serial) cụ thể
     public class Adb
     {
@@ -21,16 +107,20 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         // Phần đầu mọi lệnh: chọn server riêng + thiết bị, ví dụ "-P 5038 -s emulator-5700"
         public string Target { get { return "-P " + ServerPort + " -s " + Serial; } }
 
+        // Server riêng phải chạy (ở chế độ không nhận USB) trước khi gọi lệnh, nếu không adb tự bật server thường -> chiếm điện thoại
+        public void EnsureServer() { AdbServer.Ensure(Exe, ServerPort); }
+
         // Chạy "adb -P <port> -s <serial> <args>" và trả về output dạng chuỗi, có timeout
-        public string Run(string args, int timeoutMs) { return Proc.Run(Exe, Target + " " + args, timeoutMs, null); }
+        public string Run(string args, int timeoutMs) { EnsureServer(); return Proc.Run(Exe, Target + " " + args, timeoutMs, null); }
         // Chạy một lệnh shell trên Android qua "adb shell <cmd>"
         public string Shell(string cmd, int timeoutMs) { return Run("shell " + cmd, timeoutMs); }
         // Chụp màn hình thiết bị (PNG thô) qua "adb exec-out screencap -p", timeout 15 giây
-        public byte[] Screencap() { return Proc.RunBytes(Exe, Target + " exec-out screencap -p", 15000); }
+        public byte[] Screencap() { EnsureServer(); return Proc.RunBytes(Exe, Target + " exec-out screencap -p", 15000); }
 
         // Kiểm tra thiết bị có đang online trong "adb devices" (của server riêng) không
         public bool Online()
         {
+            EnsureServer();
             // Tìm dòng "<serial>\tdevice" (trạng thái device = online, không phải offline)
             return Proc.Run(Exe, "-P " + ServerPort + " devices", 8000, null).Contains(Serial + "\tdevice");
         }
@@ -38,6 +128,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         // Trạng thái thiết bị trong "adb devices": "device" (online), "offline", "unauthorized"... hoặc "" nếu không thấy
         public string State()
         {
+            EnsureServer();
             foreach (var l in Proc.Run(Exe, "-P " + ServerPort + " devices", 8000, null).Split('\n'))
             {
                 var p = l.Trim().Split('\t');
@@ -47,7 +138,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         }
 
         // Ép adb server kết nối lại các thiết bị đang kẹt "offline" (hay gặp khi cổng adb nằm ngoài dải 5555-5585)
-        public void ReconnectOffline() { Proc.Run(Exe, "-P " + ServerPort + " reconnect offline", 10000, null); }
+        public void ReconnectOffline() { EnsureServer(); Proc.Run(Exe, "-P " + ServerPort + " reconnect offline", 10000, null); }
 
         // Kiểm tra Android đã boot xong chưa
         public bool Booted()
@@ -407,6 +498,41 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             LogI("⚠ KHÔNG tắt được ADB sau 3 lần. Game có thể phát hiện USB debugging - bấm ⟳ Khởi động lại nhanh rồi thử lại.");
         }
 
+        // ---------- adb server riêng: chỉ sống khi có máy cần ----------
+        static volatile EmulatorController[] all = new EmulatorController[0];
+        /// <summary>MainForm gọi mỗi khi thêm/xoá máy.</summary>
+        public static void SetAll(IEnumerable<EmulatorController> list) { all = list.ToArray(); }
+        public volatile bool Booting; // Từ lúc bấm chạy tới khi xong theo dõi boot
+        public volatile bool Adopted; // Emulator đã chạy sẵn từ trước khi mở app (app không giữ tiến trình của nó)
+        // Máy này cần adb server riêng sống: emulator đang chạy (kể cả khi ADB trong Android đã tắt).
+        // Lý do: CHÍNH emulator tự gọi adb định kỳ (vd "adb shell dumpsys package com.google.android.gms"); nếu server riêng bị tắt,
+        // lệnh đó tự bật lại 1 server THƯỜNG (không có --one-device) -> chiếm điện thoại USB. Server riêng còn sống thì emulator dùng ké nó.
+        public bool NeedsAdbServer
+        {
+            get
+            {
+                // Vừa bấm chạy < 60s (chưa kịp có tiến trình; quá 60s mà không có = bật lỗi)
+                if (Booting && (Running || (DateTime.Now - bootingSince).TotalSeconds < 60)) return true;
+                return Running || (Adopted && AdbServer.Listening(Port));
+            }
+        }
+        DateTime bootingSince;
+
+        /// <summary>Gọi định kỳ: còn máy chạy -> bảo đảm server riêng (chế độ không nhận USB) đang sống, thay server thường nếu có;
+        /// không còn máy nào chạy -> kill-server, trên PC không còn adb.exe của app.</summary>
+        public void MaintainAdbServer()
+        {
+            if (all.Any(x => x.NeedsAdbServer)) { AdbServer.Ensure(AdbExe, AdbServerPort); return; }
+            ReleaseAdbIfIdle();
+        }
+
+        /// <summary>Không còn máy nào chạy -> kill-server cổng riêng.</summary>
+        public void ReleaseAdbIfIdle()
+        {
+            if (all.Any(x => x.NeedsAdbServer)) return;
+            if (AdbServer.Release(AdbExe, AdbServerPort)) Log.I("Đã tắt adb server riêng (cổng " + AdbServerPort + "): không còn máy ảo nào chạy.");
+        }
+
         /// <summary>Tắt Wi-Fi ảo rồi bật lại trong Android, chờ có Internet trở lại (tối đa ~60s).</summary>
         public bool RefreshNetwork()
         {
@@ -478,7 +604,9 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             if (!File.Exists(EmulatorExe)) throw new Exception("Chưa có emulator.exe, bấm 'Tải SDK + image' trước."); // Chưa tải SDK
             CreateAvd(); // luôn ghi lại config.ini theo cấu hình hiện tại (không đụng dữ liệu)
 
-            Proc.Run(AdbExe, "-P " + AdbServerPort + " start-server", 20000, null); // Khởi động adb server riêng trước
+            bootingSince = DateTime.Now; Booting = true; // Giữ adb server sống tới khi BootWatch xong (BootWatch tự đặt lại false)
+            try { AdbServer.Ensure(AdbExe, AdbServerPort); } // Khởi động adb server riêng trước (không nhận USB), để emulator báo danh vào đúng server này
+            catch { Booting = false; throw; }
 
             var a = new StringBuilder(); // Bộ đệm tham số dòng lệnh cho emulator.exe
             a.Append("-avd ").Append(AvdName) // -avd: tên máy ảo cần chạy
@@ -567,9 +695,16 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         /// emulator in "Successfully loaded snapshot". Không bỏ cuộc sau 400s: vẫn thử tiếp (thưa hơn) tới khi emulator thoát.</summary>
         void BootWatch(Process p)
         {
+            Booting = true;
+            try { BootWatchCore(p); }
+            finally { Booting = false; ReleaseAdbIfIdle(); } // Xong việc cần adb -> tắt server riêng nếu không máy nào còn cần
+        }
+
+        void BootWatchCore(Process p)
+        {
             var adb = NewAdb(); // adb nhắm vào emulator
             var t0 = DateTime.Now; // Mốc bắt đầu chờ
-            bool ready = false, prioDone = !S.GetBool("HighPriority", true), slowWarned = false, killWarned = false, reconnLogged = false;
+            bool ready = false, prioDone = !S.GetBool("HighPriority", true), slowWarned = false, reconnLogged = false;
             DateTime readyAt = DateTime.MinValue, lastReconn = t0;
             bool killedInSave = AdbKilled; // Trạng thái ADB ghi nhận trong bản Quick Boot / bản lưu sắp nạp
             Thread.Sleep(2000);
@@ -606,10 +741,11 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                     // Trạng thái nạp lại đã tắt ADB sẵn: 10s sau khi nạp mà adb vẫn không online -> không cần làm gì thêm
                     if (snapOk && killedInSave && st != "device" && (now - new DateTime(sl)).TotalSeconds > 10) { AdbKilled = true; return; }
                     if (AdbOn && (now - readyAt).TotalMinutes > 10) return; // Dùng ADB: hết 10 phút vẫn không online thì thôi chờ
-                    if (!AdbOn && !killWarned && (now - readyAt).TotalMinutes > 10)
+                    if (!AdbOn && (now - readyAt).TotalMinutes > 10)
                     {
-                        killWarned = true; // Vẫn thử tiếp, chỉ cảnh báo 1 lần
+                        // Thôi chờ (không giữ adb server chạy mãi)
                         LogI("⚠ Android đã chạy nhưng adb chưa kết nối được nên CHƯA tắt được ADB. Bấm ⟳ Khởi động lại nhanh nếu lo game phát hiện.");
+                        return;
                     }
                 }
                 else if (!slowWarned && sec > 400)
@@ -654,6 +790,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 Thread.Sleep(3000); // Chờ 3 giây trước khi chạy lại
                 try { Start(true); return; } catch (Exception ex) { LogI("Khởi động lại lỗi: " + ex.Message); } // Chạy lại bằng cold boot, lỗi thì ghi log
             }
+            ReleaseAdbIfIdle(); // Máy cuối cùng cần ADB vừa tắt -> tắt server riêng
             var h = Stopped; // Sao chép delegate để tránh race
             if (h != null) h(); // Phát sự kiện Stopped
         }
