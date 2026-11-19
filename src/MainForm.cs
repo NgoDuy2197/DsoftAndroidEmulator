@@ -69,7 +69,7 @@ namespace DsoftEmu
         readonly StatsPoller stats = new StatsPoller();  // Bộ đọc số liệu qua adb
         volatile bool polling;  // Đang đọc số liệu (tránh chạy chồng)
         DateTime lastPoll = DateTime.MinValue;  // Lần đọc số liệu gần nhất
-        Button bNet, bSave, bRestart, bLoad, bAdb, bShot, bMax, bDisp;  // Nút thao tác nhanh ở thanh bên
+        Button bNet, bSave, bRestart, bLoad, bAdb, bShot, bMax, bMini, bDisp, bFilter;  // Nút thao tác nhanh ở thanh bên
         Watchdog watch;  // Giám sát bất thường + gửi Discord
         TextBox tHook, tHookName, tRetry;  // Webhook Discord, tên máy hiện trong tin nhắn, lịch thử lại (phút)
         NumericUpDown nWatchSec, nShotMin, nScanSec;  // Chu kỳ kiểm tra (giây), chu kỳ chụp ảnh (phút), chu kỳ quét gửi (giây)
@@ -83,7 +83,7 @@ namespace DsoftEmu
         // tổng quan
         readonly Label lCurImg = new Label { AutoSize = true, Font = FBig, ForeColor = CText };  // Tên bản Android đang chọn (chữ lớn)
         readonly Label lCurSub = new Label { AutoSize = true, ForeColor = CMuted, Margin = new Padding(3, 0, 3, 8) };  // Dòng mô tả cấu hình máy ảo
-        readonly Label lState = new Label { AutoSize = true, Font = FBold, ForeColor = Color.White, Padding = new Padding(10, 4, 10, 4), Margin = new Padding(3, 0, 3, 10) };  // Nhãn trạng thái có màu nền (Đang chạy / Đã tắt...)
+        readonly Label lState = new RoundLabel { AutoSize = true, Font = FBold, ForeColor = Color.White, Padding = new Padding(10, 4, 10, 4), Margin = new Padding(3, 0, 3, 10) };  // Nhãn trạng thái có màu nền (Đang chạy / Đã tắt...)
         readonly TableLayoutPanel checks = new TableLayoutPanel { ColumnCount = 4, AutoSize = true, Dock = DockStyle.Fill };  // Bảng 4 cột: biểu tượng, tên mục, chi tiết, nút sửa
         readonly Dictionary<string, Label[]> checkRows = new Dictionary<string, Label[]>();  // Mỗi mục kiểm tra: [nhãn biểu tượng, nhãn chi tiết]
         readonly Dictionary<string, Button> checkBtns = new Dictionary<string, Button>();  // Nút sửa lỗi của từng mục kiểm tra
@@ -205,6 +205,9 @@ namespace DsoftEmu
             bRestart = SideBtn(side, "⟳  Khởi động lại nhanh", (s, e) => RestartEmu(false), "Tắt rồi bật lại bằng Quick Boot, giữ nguyên trạng thái (~20-30s). Dùng khi chạy lâu bị chậm.");
             bShot = SideBtn(side, "▣  Chụp gửi Discord", (s, e) => ShotToDiscord(), "Chụp màn hình Android và gửi qua webhook Discord (không cần ADB). Cấu hình ở trang Cấu hình.");
             bMax = SideBtn(side, "⛶  Phóng to cửa sổ", (s, e) => ToggleEmuMax(), "Phóng cửa sổ giả lập của máy đang chọn vừa màn hình (giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
+            bMini = SideBtn(side, "▭  Thu nhỏ cửa sổ", (s, e) => ToggleEmuMini(), "Thu cửa sổ giả lập của máy đang chọn về cỡ nhỏ (cạnh dài 360px, giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
+            bFilter = SideBtn(side, "◑  Lớp phủ tối: Tắt", (s, e) => ToggleFilter(),
+                "Phủ lên cửa sổ giả lập của máy đang chọn: làm tối + đen trắng (chỉnh ở trang Cấu hình). Chuột/phím vẫn bấm xuyên qua; không đổi gì trong Android, ảnh gửi Discord vẫn có màu.");
             bDisp = SideBtn(side, "◐  Hiển thị: Mặc định", (s, e) => ApplyDisplay(emu.Display == "afk" ? "play" : "afk"),
                 "Chuyển máy đang chọn giữa hồ sơ hiển thị Mặc định và Treo máy (độ phân giải thấp, nhẹ máy). Đang chạy thì phải khởi động NGUỘI (game bị đóng). Giá trị ở trang Cấu hình.");
             return side;  // Trả về thanh bên
@@ -215,7 +218,7 @@ namespace DsoftEmu
         // Tạo nút nhỏ kiểu tối cho thanh bên
         Button SideBtn(Control parent, string text, EventHandler h, string tip)
         {
-            var b = new Button
+            var b = new RoundButton
             {
                 Text = text, Width = 176, Height = 34, Margin = new Padding(12, 3, 12, 3), FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(6, 0, 0, 0), ForeColor = Color.FromArgb(220, 224, 232), BackColor = CSideHover, Font = new Font("Segoe UI", 9.5f), Cursor = Cursors.Hand
@@ -253,10 +256,10 @@ namespace DsoftEmu
             {
                 var e = e0;
                 var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(12, 2, 0, 2) };
-                var name = new Button { Width = 136, Height = 30, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0), Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand, Tag = e };
+                var name = new RoundButton { Width = 136, Height = 30, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0), Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand, Tag = e };
                 name.FlatAppearance.BorderSize = 0;
                 name.Click += (s, a) => SelectMachine(e.Index, true);
-                var act = new Button { Width = 36, Height = 30, FlatStyle = FlatStyle.Flat, Margin = new Padding(4, 0, 0, 0), Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand, ForeColor = Color.White, Tag = e };
+                var act = new RoundButton { Width = 36, Height = 30, FlatStyle = FlatStyle.Flat, Margin = new Padding(4, 0, 0, 0), Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand, ForeColor = Color.White, Tag = e };
                 act.FlatAppearance.BorderSize = 0;
                 act.Click += (s, a) => { if (e.Running || e.Ready || e.UiOp != 0) StopEmu(e); else StartEmu(e, false); };
                 tips.SetToolTip(act, "Chạy / Dừng " + e.Label);
@@ -269,7 +272,7 @@ namespace DsoftEmu
                 row.Controls.Add(act);
                 machinesPanel.Controls.Add(row);
             }
-            var add = new Button { Text = "+  Thêm máy", Width = 176, Height = 28, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(12, 2, 0, 2), Padding = new Padding(6, 0, 0, 0), ForeColor = Color.Gray, BackColor = CSide, Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand };
+            var add = new RoundButton { Text = "+  Thêm máy", Width = 176, Height = 28, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(12, 2, 0, 2), Padding = new Padding(6, 0, 0, 0), ForeColor = Color.Gray, BackColor = CSide, Font = new Font("Segoe UI", 9f), Cursor = Cursors.Hand };
             add.FlatAppearance.BorderSize = 0;
             add.Click += (s, a) => NewMachine();
             add.Visible = emus.Count < 8;
@@ -352,30 +355,65 @@ namespace DsoftEmu
             }
         }
         // ---------- Phóng to cửa sổ giả lập vừa màn hình / trả lại kích thước cũ ----------
-        readonly Dictionary<IntPtr, Rectangle> emuPrevRect = new Dictionary<IntPtr, Rectangle>();  // Kích thước trước khi phóng to (theo cửa sổ)
+        // Theo cửa sổ: kích thước trước khi phóng to/thu nhỏ + chế độ đang áp dụng ("max"/"mini")
+        readonly Dictionary<IntPtr, KeyValuePair<Rectangle, string>> emuPrevRect = new Dictionary<IntPtr, KeyValuePair<Rectangle, string>>();
 
-        void ToggleEmuMax()
+        void ToggleEmuMax() { ResizeEmu("max"); }
+        void ToggleEmuMini() { ResizeEmu("mini"); }
+
+        // max = vừa màn hình; mini = rộng MiniWidth px (mặc định 360), giữ tỉ lệ, giữ góc trên-trái.
+        // Bấm lại đúng nút đang áp dụng -> trả kích thước ban đầu.
+        void ResizeEmu(string mode)
         {
             var e = emu;
             IntPtr h = Watchdog.FindEmuWindow(e.Port);
             if (h == IntPtr.Zero) { Log.I("Không tìm thấy cửa sổ giả lập của " + e.Label + "."); return; }
             RECT r; if (!GetWindowRect(h, out r)) return;
             var cur = new Rectangle(r.L, r.T, r.R - r.L, r.B - r.T);
-            Rectangle prev;
-            if (emuPrevRect.TryGetValue(h, out prev))  // Đang phóng to -> trả lại
+            if (cur.Width < 10 || cur.Height < 10) return;
+            KeyValuePair<Rectangle, string> st;
+            bool had = emuPrevRect.TryGetValue(h, out st);
+            if (had && st.Value == mode)  // Bấm lại cùng nút -> trả lại
             {
                 emuPrevRect.Remove(h);
-                SetWindowPos(h, IntPtr.Zero, prev.X, prev.Y, prev.Width, prev.Height, 0x0004 | 0x0010);  // NOZORDER|NOACTIVATE
+                var p = st.Key;
+                SetWindowPos(h, IntPtr.Zero, p.X, p.Y, p.Width, p.Height, 0x0004 | 0x0010);  // NOZORDER|NOACTIVATE
                 return;
             }
+            var orig = had ? st.Key : cur;  // Đang ở chế độ kia -> vẫn nhớ kích thước gốc
             var wa = System.Windows.Forms.Screen.FromHandle(h).WorkingArea;  // Vùng làm việc của màn hình đang chứa cửa sổ (trừ taskbar)
             int toolW = 70;  // Chừa chỗ thanh công cụ bên phải cửa sổ emulator
-            double k = Math.Min((double)(wa.Width - toolW) / cur.Width, (double)wa.Height / cur.Height);  // Giữ tỉ lệ
+            double k = mode == "max"
+                ? Math.Min((double)(wa.Width - toolW) / cur.Width, (double)wa.Height / cur.Height)
+                : (double)Math.Max(200, S.GetInt("MiniWidth", 360)) / (cur.Width >= cur.Height ? cur.Width : cur.Height);  // Cạnh dài = MiniWidth
             int w = (int)(cur.Width * k), hh = (int)(cur.Height * k);
-            int x = wa.Left + (wa.Width - toolW - w) / 2, y = wa.Top + (wa.Height - hh) / 2;  // Căn giữa
-            emuPrevRect[h] = cur;
+            int x, y;
+            if (mode == "max") { x = wa.Left + (wa.Width - toolW - w) / 2; y = wa.Top + (wa.Height - hh) / 2; }  // Căn giữa
+            else { x = Math.Max(wa.Left, Math.Min(cur.X, wa.Right - toolW - w)); y = Math.Max(wa.Top, Math.Min(cur.Y, wa.Bottom - hh)); }  // Giữ góc trên-trái, không lọt khỏi màn hình
+            emuPrevRect[h] = new KeyValuePair<Rectangle, string>(orig, mode);
             SetWindowPos(h, IntPtr.Zero, x, y, w, hh, 0x0004);  // NOZORDER
             SetForegroundWindow(h);
+        }
+        // ---------- Lớp phủ tối / đen trắng trên cửa sổ giả lập ----------
+        void ToggleFilter()
+        {
+            var e = emu;
+            int port = e.Port;
+            bool now = ScreenFilter.Toggle(port, () => Watchdog.FindEmuWindow(port), S.GetInt("FilterDim", 50), S.GetBool("FilterGray", true));
+            Log.I((now ? "Bật" : "Tắt") + " lớp phủ tối trên " + e.Label + ".");
+            RefreshRuntime();
+        }
+
+        // Đổi tuỳ chọn ở Cấu hình -> bật lại các lớp phủ đang bật để áp dụng ngay
+        void ReapplyFilters()
+        {
+            foreach (var e in emus)
+                if (ScreenFilter.IsOn(e.Port))
+                {
+                    int port = e.Port;
+                    ScreenFilter.Toggle(port, null, 0, false);  // Tắt
+                    ScreenFilter.Toggle(port, () => Watchdog.FindEmuWindow(port), S.GetInt("FilterDim", 50), S.GetBool("FilterGray", true));
+                }
         }
         struct RECT { public int L, T, R, B; }
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -432,13 +470,14 @@ namespace DsoftEmu
             pages[key] = page;  // Lưu trang theo khoá
             content.Controls.Add(page);  // Thêm trang vào vùng nội dung
             // Nút menu phẳng, chữ căn trái, Tag = khoá trang
-            var b = new Button
+            var b = new RoundButton
             {
                 Text = title, Tag = key, Padding = new Padding(16, 0, 0, 0), Width = 200, Height = 44, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.FromArgb(200, 204, 215), BackColor = CSide, Font = new Font("Segoe UI", 10.5f), Margin = new Padding(0), Cursor = Cursors.Hand
             };
             b.FlatAppearance.BorderSize = 0;  // Bỏ viền nút
             b.FlatAppearance.MouseOverBackColor = CSideHover;  // Màu nền khi rê chuột
+            b.Margin = new Padding(6, 1, 0, 1); b.Width = 188;  // Thụt vào 1 chút để thấy góc bo
             b.Click += (s, e) => ShowPage(key);  // Bấm nút -> mở trang tương ứng
             nav.Add(b);  // Lưu vào danh sách nút menu
         }
@@ -493,7 +532,7 @@ namespace DsoftEmu
         {
             Color bg = back ?? CGray;  // Không truyền màu thì dùng xám
             // Nút tự co theo chữ, cao tối thiểu 36px; có màu nền thì chữ trắng
-            var b = new Button
+            var b = new RoundButton
             {
                 Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(0, 36), FlatStyle = FlatStyle.Flat,
                 Padding = new Padding(12, 2, 12, 2), Margin = new Padding(0, 4, 8, 4), Cursor = Cursors.Hand, Font = FBold,
@@ -839,7 +878,10 @@ namespace DsoftEmu
             bRestart.Enabled = emu.Running && uiOp == 0 && !busy;  // Khởi động lại: chỉ cần emulator đang chạy
             bLoad.Enabled = uiOp == 0 && !busy && emu.HasSave;  // Chạy từ bản lưu: cần có bản lưu (tắt hay bật đều được)
             bShot.Enabled = emus.Any(Watchdog.Shootable) && !shooting;  // Chụp gửi Discord: cần ít nhất 1 máy chụp được (ghép ảnh mọi máy)
-            bMax.Enabled = emu.Running;  // Phóng to: cần cửa sổ giả lập
+            bMax.Enabled = bMini.Enabled = emu.Running;  // Phóng to / thu nhỏ: cần cửa sổ giả lập
+            bool flt = ScreenFilter.IsOn(emu.Port);
+            bFilter.Text = "◑  Lớp phủ tối: " + (flt ? "Bật" : "Tắt");
+            bFilter.ForeColor = flt ? Color.FromArgb(240, 170, 80) : Color.FromArgb(220, 224, 232);
             bDisp.Enabled = uiOp == 0 && !busy;
             bDisp.Text = "◐  Hiển thị: " + EmulatorController.DisplayName(emu.Display);
             if (cDisp != null && (dispOf != emu || dispSeen != emu.Display))  // Đổi máy / đổi hồ sơ (vd từ nút thanh bên) -> ô chọn theo máy đó
@@ -1257,6 +1299,15 @@ namespace DsoftEmu
             kTopApp.CheckedChanged += (s, e) => { S.Set("TopApp", kTopApp.Checked); S.Save(); TopMost = kTopApp.Checked; };
             var kTopEmu = Chk(opts, "Cửa sổ giả lập luôn nằm trên các cửa sổ khác (mọi máy đang chạy)", S.GetBool("TopEmu", false));
             kTopEmu.CheckedChanged += (s, e) => { S.Set("TopEmu", kTopEmu.Checked); S.Save(); ApplyEmuTopmost(true); };
+            // Lớp phủ tối (nút ◑ ở thanh bên): đen trắng + mức tối, áp dụng ngay
+            var kGray = Chk(opts, "Lớp phủ tối: chuyển đen trắng", S.GetBool("FilterGray", true));
+            kGray.CheckedChanged += (s, e) => { S.Set("FilterGray", kGray.Checked); S.Save(); ReapplyFilters(); };
+            var dimRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            dimRow.Controls.Add(new Label { AutoSize = true, Text = "Lớp phủ tối: độ tối (%)", Margin = new Padding(3, 6, 6, 0) });
+            var nDim = Num(0, 90, S.GetInt("FilterDim", 50), 10);
+            nDim.ValueChanged += (s, e) => { S.Set("FilterDim", (int)nDim.Value); S.Save(); ReapplyFilters(); };
+            dimRow.Controls.Add(nDim);
+            opts.Controls.Add(dimRow);
 
             var bar = Row();  // Thanh nút trên cùng
             // Nút Lưu cấu hình
@@ -1778,6 +1829,7 @@ namespace DsoftEmu
                 if (r == DialogResult.Yes) Task.WaitAll(running.Select(x => Task.Run(() => x.Stop())).ToArray());  // Yes = tắt hết (song song)
             }
             timer.Stop();  // Dừng timer
+            ScreenFilter.Off(-1);  // Gỡ mọi lớp phủ
             watch.Stop();  // Dừng giám sát
             MacroRunner.StopAll();  // Dừng tất cả macro
             mapper.Dispose();  // Gỡ hook bàn phím
