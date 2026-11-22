@@ -159,7 +159,7 @@ namespace DsoftEmu
                 logBox.AppendText(s + "\r\n");  // Thêm dòng log mới kèm xuống dòng
             });
             MacroRunner.Changed += () => UI(RefreshMacroList);  // Danh sách macro đang chạy thay đổi -> vẽ lại danh sách
-            timer.Tick += (s, e) => { FollowFocus(); ApplyEmuTopmost(false); SweepAdbServer(); RefreshRuntime(); };  // Mỗi nhịp: theo cửa sổ emulator đang focus, giữ trên cùng, cập nhật trạng thái
+            timer.Tick += (s, e) => { FollowFocus(); ApplyEmuTopmost(false); SweepAdbServer(); PeriodicRestart(); RefreshRuntime(); };  // Mỗi nhịp: theo cửa sổ emulator đang focus, giữ trên cùng, cập nhật trạng thái
             TopMost = S.GetBool("TopApp", false);  // App luôn trên cùng (nếu bật)
 
             DragEnter += (s, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };  // Kéo file vào: chấp nhận nếu dữ liệu là file
@@ -1019,15 +1019,17 @@ namespace DsoftEmu
         }
 
         // Tắt rồi bật lại giả lập; fromSave = bật từ bản lưu thay vì Quick Boot
-        void RestartEmu(bool fromSave)
+        void RestartEmu(bool fromSave) { RestartEmu(emu, fromSave, true); }
+
+        // ask = false: app tự gọi (khởi động lại định kỳ), không hỏi
+        void RestartEmu(EmulatorController e, bool fromSave, bool ask)
         {
-            var e = emu;  // Máy đang chọn
             if (e.Busy || e.UiOp != 0) return;  // Đang thao tác khác thì bỏ qua
             if (fromSave && !e.HasSave) { Log.I("Chưa có bản lưu - bấm 'Lưu trạng thái' khi đang chạy."); return; }  // Chưa lưu thì báo
             // Chạy từ bản lưu sẽ thay trạng thái hiện tại -> hỏi trước
-            if (fromSave && (e.Running || e.Ready) &&
+            if (ask && fromSave && (e.Running || e.Ready) &&
                 MessageBox.Show(this, "Bật lại " + e.Label + " từ bản lưu? Màn hình/app đang mở sẽ quay về lúc bấm 'Lưu trạng thái'.", "Chạy từ bản lưu", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-            SaveUi();  // Lưu cấu hình trên giao diện trước khi bật lại
+            if (ask) SaveUi();  // Lưu cấu hình trên giao diện trước khi bật lại (tự động thì không đụng chỗ người dùng đang sửa dở)
             e.Busy = true;  // Khoá nút thao tác nhanh
             e.UiOp = e.Running ? 2 : 1;  // Đang chạy thì trạng thái "Đang dừng", không thì "Đang bật"
             RefreshRuntime();  // Cập nhật nút ngay
@@ -1037,12 +1039,27 @@ namespace DsoftEmu
                 {
                     if (e.Running) e.Stop();  // Tắt mềm (Quick Boot tự lưu trạng thái)
                     e.Ready = false;  // Android chưa sẵn sàng
-                    stats.Reset();  // Xoá số liệu cũ
+                    if (e == emu) stats.Reset();  // Xoá số liệu cũ (số liệu hiển thị của máy đang chọn)
                     e.UiOp = 1;  // Chuyển sang "Đang bật"
                     e.Restart(fromSave);  // Bật lại
                 }
                 finally { e.UiOp = 0; e.Busy = false; }  // Luôn mở khoá
             });
+        }
+
+        // Tự khởi động lại nhanh mỗi N giờ chạy liên tục (PeriodicRestartHours, 0 = tắt - mặc định).
+        // Android mất mạng vài chục giây khi bật lại -> chỉ bật nếu game chịu được.
+        void PeriodicRestart()
+        {
+            int hours = S.GetInt("PeriodicRestartHours", 0);
+            if (hours <= 0) return;
+            foreach (var e in emus.ToArray())
+            {
+                if (!e.Running || !e.IsBooted || e.Busy || e.UiOp != 0) continue;
+                if ((DateTime.Now - e.StartedAt).TotalHours < hours) continue;
+                Log.I("⟳ " + e.Label + " đã chạy " + hours + " giờ -> khởi động lại nhanh định kỳ.");
+                RestartEmu(e, false, false);
+            }
         }
 
         // Bật WHPX bằng DISM với quyền Admin (cửa sổ cmd giữ lại để xem kết quả)
@@ -1308,6 +1325,16 @@ namespace DsoftEmu
             nDim.ValueChanged += (s, e) => { S.Set("FilterDim", (int)nDim.Value); S.Save(); ReapplyFilters(); };
             dimRow.Controls.Add(nDim);
             opts.Controls.Add(dimRow);
+            // GPU lỗi khi boot -> tự chuyển swangle (áp dụng ngay)
+            var kGpuFb = Chk(opts, "GPU lỗi lúc khởi động (driver reset / RDP): tự bật lại bằng swangle (vẽ bằng CPU)", S.GetBool("GpuFallback", true));
+            kGpuFb.CheckedChanged += (s, e) => { S.Set("GpuFallback", kGpuFb.Checked); S.Save(); };
+            // Khởi động lại nhanh định kỳ (mặc định tắt: Android mất mạng lúc bật lại)
+            var prRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            prRow.Controls.Add(new Label { AutoSize = true, Text = "Tự khởi động lại nhanh mỗi (giờ, 0 = tắt; Android mất mạng lúc bật lại)", Margin = new Padding(3, 6, 6, 0) });
+            var nPr = Num(0, 168, S.GetInt("PeriodicRestartHours", 0), 1);
+            nPr.ValueChanged += (s, e) => { S.Set("PeriodicRestartHours", (int)nPr.Value); S.Save(); };
+            prRow.Controls.Add(nPr);
+            opts.Controls.Add(prRow);
 
             var bar = Row();  // Thanh nút trên cùng
             // Nút Lưu cấu hình

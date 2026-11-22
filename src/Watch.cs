@@ -169,6 +169,11 @@ namespace DsoftEmu // Không gian tên chung của app
         {
             e.Exited += (code, unexpected) => OnExit(e, code, unexpected);
             e.Booted += () => OnBooted(e);
+            e.GpuFallback += () =>
+            {
+                var s = St(e); Reset(s.Console); s.BootSlowSent = false; s.Crashed = true;
+                if (Enabled && Alerts) Alert("🟠", Who(e) + "GPU không dùng được (Android treo khi boot) · tự bật lại bằng swangle (vẽ bằng CPU)", null, false);
+            };
         }
 
         public void Start()

@@ -160,6 +160,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         public event Action Booted; // Sự kiện phát ra khi Android boot xong
         public event Action Stopped; // Sự kiện phát ra khi emulator đã dừng hẳn
         public event Action<int, bool> Exited; // Emulator thoát: (mã thoát, true = không phải do app chủ động dừng)
+        public event Action GpuFallback; // GPU thật không dùng được -> app chuyển sang swangle
 
         // Hàm khởi tạo: nhận cấu hình, thư mục gốc và số thứ tự máy (0 = Máy 1)
         public EmulatorController(Settings s, string baseDir) : this(s, baseDir, 0) { }
@@ -342,8 +343,24 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 { "ANDROID_SDK_ROOT", SdkDir }, // Thư mục SDK (tên biến kiểu cũ)
                 { "ANDROID_HOME", SdkDir }, // Thư mục SDK (tên biến kiểu mới)
                 { "ANDROID_AVD_HOME", AvdHome }, // Thư mục chứa các AVD
-                { "ANDROID_ADB_SERVER_PORT", AdbServerPort.ToString() } // Emulator báo danh / gọi adb qua server riêng, không đụng server 5037
+                { "ANDROID_ADB_SERVER_PORT", AdbServerPort.ToString() }, // Emulator báo danh / gọi adb qua server riêng, không đụng server 5037
+                { "PATH", EmuPath() } // Chỉ adb của SDK: emulator gọi MỌI adb.exe tìm thấy trong PATH (vd adb cũ của scrcpy) -> 2 bản khác nhau giành nhau server
             };
+        }
+
+        // PATH cho emulator: platform-tools của SDK đứng đầu, bỏ mọi thư mục khác có adb.exe
+        string EmuPath()
+        {
+            var keep = new List<string> { Path.Combine(SdkDir, "platform-tools") };
+            foreach (var d in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
+            {
+                string t = d.Trim().Trim('"');
+                if (t.Length == 0) continue;
+                bool hasAdb = false;
+                try { hasAdb = File.Exists(Path.Combine(Environment.ExpandEnvironmentVariables(t), "adb.exe")); } catch { } // Đường dẫn lỗi -> coi như không có adb
+                if (!hasAdb) keep.Add(d);
+            }
+            return string.Join(";", keep);
         }
 
         // ---------- Hồ sơ hiển thị: play = Mặc định (Width/Height/Dpi), afk = Treo máy (nhẹ), custom = Tuỳ chỉnh ----------
@@ -396,7 +413,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             kv("hw.lcd.density", dpi); // Mật độ điểm ảnh (DPI)
             kv("hw.initialOrientation", w > h ? "landscape" : "portrait"); // Hướng màn hình: ngang nếu rộng > cao
             kv("hw.gpu.enabled", "yes"); // Bật tăng tốc GPU
-            kv("hw.gpu.mode", GpuMode); // Chế độ GPU (host = dùng card đồ hoạ thật)
+            kv("hw.gpu.mode", RunGpu); // Chế độ GPU (host = dùng card đồ hoạ thật)
             kv("hw.keyboard", "yes"); // Cho phép gõ bằng bàn phím máy tính
             kv("hw.mainKeys", "no"); // Không có phím cứng -> hiện thanh điều hướng
             kv("hw.audioInput", "no"); // Tắt micro
@@ -440,6 +457,14 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 return Array.IndexOf(GpuModes, g) >= 0 ? g : "auto"; // Không nằm trong danh sách -> auto
             }
         }
+
+        // GPU thật hỏng (vd sau khi driver bị reset / RDP) -> phiên tự khởi động lại dùng tạm swangle (vẽ bằng CPU).
+        // Bỏ khi người dùng tự bấm chạy / khởi động lại.
+        volatile string gpuOverride;
+        volatile bool gpuBad; // Emulator in "Your GPU cannot be used for hardware rendering"
+        volatile bool gpuSwitching; // Đang tự tắt để chuyển sang swangle (OnExit không coi là crash)
+        bool autoStart; // Start() do app tự gọi (sau crash / chuyển GPU), không phải người dùng
+        public string RunGpu { get { return gpuOverride ?? GpuMode; } } // Chế độ GPU của phiên đang/sắp chạy
 
         // Tên snapshot của nút "Lưu trạng thái" (tách riêng khỏi default_boot của Quick Boot)
         public const string SaveName = "dsoft_save";
@@ -602,6 +627,8 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         {
             if (Running) { LogI("Giả lập đang chạy."); return; } // Đang chạy rồi thì thoát
             if (!File.Exists(EmulatorExe)) throw new Exception("Chưa có emulator.exe, bấm 'Tải SDK + image' trước."); // Chưa tải SDK
+            if (!autoStart) gpuOverride = null; // Người dùng tự bật -> thử lại GPU theo cấu hình
+            autoStart = false; gpuBad = false; gpuSwitching = false;
             CreateAvd(); // luôn ghi lại config.ini theo cấu hình hiện tại (không đụng dữ liệu)
 
             bootingSince = DateTime.Now; Booting = true; // Giữ adb server sống tới khi BootWatch xong (BootWatch tự đặt lại false)
@@ -611,7 +638,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             var a = new StringBuilder(); // Bộ đệm tham số dòng lệnh cho emulator.exe
             a.Append("-avd ").Append(AvdName) // -avd: tên máy ảo cần chạy
              .Append(" -ports ").Append(Port).Append(',').Append(Port + 1) // -ports: cổng console + cổng adb (ngoài dải adb tự quét)
-             .Append(" -gpu ").Append(GpuMode) // -gpu: chế độ render đồ hoạ (đã lọc giá trị không hợp lệ)
+             .Append(" -gpu ").Append(RunGpu) // -gpu: chế độ render đồ hoạ (đã lọc giá trị không hợp lệ; swangle nếu GPU vừa hỏng)
              .Append(" -cores ").Append(S.GetInt("Cores", 4)) // -cores: số nhân CPU ảo
              .Append(" -memory ").Append(S.GetInt("RamMB", 4096)) // -memory: RAM (MB)
              .Append(" -netdelay none -netspeed full"); // -netdelay none: không giả lập độ trễ mạng; -netspeed full: tốc độ mạng tối đa
@@ -648,6 +675,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 if (line.Contains("Successfully loaded snapshot")) Interlocked.Exchange(ref snapLoadTicks, DateTime.Now.Ticks);
                 else if (line.Contains("Boot completed in")) bootDone = true; // Emulator tự báo Android boot xong (không cần hỏi adb)
                 else if (line.Contains("Failed to load snapshot")) snapFailed = true; // Nạp lỗi -> emulator chuyển sang cold boot (ADB bật lại)
+                else if (line.Contains("GPU cannot be used for hardware rendering")) gpuBad = true; // GPU thật không dùng được (BootWatch xử lý)
                 string u = line.ToUpperInvariant(); // Chuyển chữ hoa để so khớp không phân biệt hoa thường
                 if (u.Contains("ERROR") || u.Contains("FATAL") || u.Contains("PANIC")) ShowEmuError(line); // Chỉ đẩy dòng lỗi lên log giao diện (có giới hạn)
             }, false);
@@ -728,6 +756,16 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                     continue;
                 }
 
+                // GPU thật không dùng được và Android chưa lên sau 60s (thường treo hàng giờ) -> tắt, bật lại bằng swangle
+                if (!ready && gpuBad && sec > 60 && RunGpu != "swangle" && RunGpu != "swiftshader" && RunGpu != "software" && S.GetBool("GpuFallback", true))
+                {
+                    gpuSwitching = true;
+                    LogI("⚠ GPU không dùng được cho giả lập (driver lỗi / đang RDP?) -> tắt và bật lại bằng swangle (vẽ bằng CPU, chậm hơn). Bấm chạy lại bằng tay để thử lại GPU.");
+                    var gf = GpuFallback; if (gf != null) try { gf(); } catch { }
+                    try { Proc.KillTree(p.Id); } catch { }
+                    return;
+                }
+
                 long sl = Interlocked.Read(ref snapLoadTicks); // Thời điểm nạp snapshot xong (0 = chưa thấy)
                 bool snapOk = sl != 0 && !snapFailed;
                 if (!ready && (bootDone || snapOk))
@@ -779,6 +817,13 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             try { code = ((Process)sender).ExitCode; } catch { } // Đọc mã thoát của tiến trình
             IsBooted = false; // Không còn ở trạng thái đã boot
             LogI("Emulator thoát, mã " + code); // Ghi log mã thoát
+            if (gpuSwitching && !stopping) // App tự tắt để chuyển sang swangle: bật lại ngay, không tính là crash
+            {
+                gpuSwitching = false;
+                gpuOverride = "swangle";
+                Thread.Sleep(2000);
+                try { autoStart = true; Start(true); return; } catch (Exception ex) { autoStart = false; LogI("Khởi động lại (swangle) lỗi: " + ex.Message); }
+            }
             var ex0 = Exited; // Báo cho bộ giám sát (gửi Discord)
             if (ex0 != null) try { ex0(code, !stopping); } catch { }
             // mã 0 = người dùng tự đóng cửa sổ, không phải crash
@@ -788,7 +833,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 autoRestarts++; // Tăng bộ đếm số lần tự khởi động lại
                 LogI("⟳ Emulator dừng bất thường, khởi động lại (cold boot) lần " + autoRestarts + "/3 ..."); // Ghi log
                 Thread.Sleep(3000); // Chờ 3 giây trước khi chạy lại
-                try { Start(true); return; } catch (Exception ex) { LogI("Khởi động lại lỗi: " + ex.Message); } // Chạy lại bằng cold boot, lỗi thì ghi log
+                try { autoStart = true; Start(true); return; } catch (Exception ex) { autoStart = false; LogI("Khởi động lại lỗi: " + ex.Message); } // Chạy lại bằng cold boot (giữ GPU tạm nếu có), lỗi thì ghi log
             }
             ReleaseAdbIfIdle(); // Máy cuối cùng cần ADB vừa tắt -> tắt server riêng
             var h = Stopped; // Sao chép delegate để tránh race
