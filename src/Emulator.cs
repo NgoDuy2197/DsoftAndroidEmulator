@@ -778,7 +778,13 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                 {
                     // Trạng thái nạp lại đã tắt ADB sẵn: 10s sau khi nạp mà adb vẫn không online -> không cần làm gì thêm
                     if (snapOk && killedInSave && st != "device" && (now - new DateTime(sl)).TotalSeconds > 10) { AdbKilled = true; return; }
-                    if (AdbOn && (now - readyAt).TotalMinutes > 10) return; // Dùng ADB: hết 10 phút vẫn không online thì thôi chờ
+                    if (AdbOn && (now - readyAt).TotalMinutes > 10) // Dùng ADB: hết 10 phút vẫn không online thì thôi chờ
+                    {
+                        LogI("⚠ ADB vẫn không kết nối được (adb: " + (st == "" ? "không thấy thiết bị" : st) + ") -> map phím / auto click / số liệu không chạy. " +
+                             "Có thể 'Gỡ lỗi USB' trong Android đang TẮT (app đã tắt trước đó, khởi động nguội KHÔNG tự bật lại). " +
+                             "Bật tay trong Android: Settings > About > bấm 'Build number' 7 lần, rồi Settings > System > Developer options > bật 'USB debugging'.");
+                        return;
+                    }
                     if (!AdbOn && (now - readyAt).TotalMinutes > 10)
                     {
                         // Thôi chờ (không giữ adb server chạy mãi)
@@ -817,6 +823,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             try { code = ((Process)sender).ExitCode; } catch { } // Đọc mã thoát của tiến trình
             IsBooted = false; // Không còn ở trạng thái đã boot
             LogI("Emulator thoát, mã " + code); // Ghi log mã thoát
+            if (!stopping) try { LogI("[sys] Lúc thoát: " + SysLog.Snapshot()); } catch { } // Đóng ngoài ý muốn -> chụp trạng thái để tìm nguyên nhân
             if (gpuSwitching && !stopping) // App tự tắt để chuyển sang swangle: bật lại ngay, không tính là crash
             {
                 gpuSwitching = false;

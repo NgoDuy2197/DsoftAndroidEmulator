@@ -1794,6 +1794,7 @@ namespace DsoftEmu
         // Khởi động phần còn lại sau khi form hiện
         void OnLoaded()
         {
+            SysLog.Init();  // Ghi log sự kiện phiên Windows (RDP, khoá máy, ngủ...)
             Directory.CreateDirectory(Path.Combine(baseDir, "keymaps"));  // Tạo thư mục keymaps
             if (File.Exists(KeymapPath)) keyEdit.Text = Crlf(File.ReadAllText(KeymapPath));  // Có file keymap thì nạp vào ô soạn
             ApplyKeymap(false);  // Áp dụng keymap (không ghi file)

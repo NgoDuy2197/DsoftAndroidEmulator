@@ -25,8 +25,10 @@ namespace DsoftEmu // Không gian tên chung của app
         /// <summary>Ghi một dòng log kèm giờ và phát sự kiện Line.</summary>
         public static void I(string msg)
         {
-            string s = DateTime.Now.ToString("HH:mm:ss") + "  " + msg; // Gắn giờ:phút:giây vào đầu dòng
-            lock (lk) { try { if (file != null) File.AppendAllText(file, s + Environment.NewLine); } catch { } } // Khoá rồi nối dòng vào file log, lỗi thì bỏ qua
+            var now = DateTime.Now;
+            string s = now.ToString("HH:mm:ss") + "  " + msg; // Gắn giờ:phút:giây vào đầu dòng (giao diện)
+            string f = now.ToString("dd/MM HH:mm:ss") + "  " + msg; // File log có cả ngày để đối chiếu sự cố
+            lock (lk) { try { if (file != null) File.AppendAllText(file, f + Environment.NewLine); } catch { } } // Khoá rồi nối dòng vào file log, lỗi thì bỏ qua
             var h = Line; // Chép sự kiện ra biến tạm để tránh bị gỡ giữa chừng
             if (h != null) h(s); // Có người đăng ký thì gọi báo dòng log
         }
