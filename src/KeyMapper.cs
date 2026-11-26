@@ -19,7 +19,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
     /// </summary>
     public class KeyMapper : IDisposable
     {
-        enum Kind { Tap, Joy, Macro, Toggle } // Loại gán phím: chạm, joystick, chạy macro, bật/tắt map
+        enum Kind { Tap, Joy, Macro, Toggle, Combo, Repeat } // Loại gán phím: chạm, joystick, chạy macro, bật/tắt map
 
         // Một dòng gán phím đã parse cùng trạng thái chạm hiện tại
         class Bind
@@ -28,6 +28,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             public int[] Vk; // Danh sách mã phím ảo (joy có 4 phím: lên, trái, xuống, phải)
             public double X, Y, R; // Toạ độ tâm chuẩn hoá và bán kính
             public string Macro; // Tên macro cần bật/tắt (với loại Macro)
+            public DsoftEmu.Macro Seq; // Chuỗi bước của combo/repeat (cú pháp giống file macro, ngăn cách bằng ;)
             public long Id; // Pointer id riêng cho chạm của gán phím này
             public bool Active; // Đang giữ chạm trên màn hình hay không
             public double CurX, CurY; // Toạ độ chạm hiện tại (để nhả đúng chỗ)
@@ -95,6 +96,21 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                         case "macro": // macro <Key> <tên_macro>
                             b.K = Kind.Macro; b.Vk = new[] { Vk(a[1]) }; b.Macro = a[2]; // Loại macro, phím và tên macro
                             break;
+                        case "combo":  // combo <Key> bước; bước; ...   bấm 1 lần = chạy chuỗi 1 lần
+                        case "repeat": // repeat <Key> bước; bước; ...  giữ phím = lặp chuỗi, nhả = dừng
+                            {
+                                bool rp = a[0].ToLowerInvariant() == "repeat";
+                                b.K = rp ? Kind.Repeat : Kind.Combo; b.Vk = new[] { Vk(a[1]) };
+                                // Phần sau tên phím (giữ nguyên dấu ;) -> mỗi đoạn là 1 dòng macro
+                                int p0 = line.IndexOf(a[0], StringComparison.Ordinal) + a[0].Length;
+                                string body = line.Substring(line.IndexOf(a[1], p0, StringComparison.Ordinal) + a[1].Length);
+                                var e2 = new List<string>();
+                                b.Seq = DsoftEmu.Macro.Parse("phím " + a[1], body.Replace(';', '\n'), e2);
+                                foreach (var x in e2) errs.Add("Dòng " + (n + 1) + " (" + a[0] + "): " + x.Replace("Dòng ", "bước "));
+                                if (b.Seq.Steps.Count == 0) throw new Exception(a[0] + " chưa có bước nào (vd: tap 0.5 0.5; wait 80 120; tap 0.6 0.5)");
+                                b.Seq.Loop = rp ? 0 : 1; b.Seq.Quiet = true; b.Seq.BreakPct = 0;
+                            }
+                            break;
                         case "toggle": // toggle <Key>
                             b.K = Kind.Toggle; b.Vk = new[] { Vk(a[1]) }; // Phím bật/tắt toàn bộ map phím
                             break;
@@ -120,6 +136,45 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             byVk = map; // Thay bảng tra cứu (gán nguyên tử, hook đọc ngay bảng mới)
             Log.I("Keymap: " + list.Count + " gán phím" + (errs.Count > 0 ? ", " + errs.Count + " lỗi" : "")); // Ghi log số gán phím và số lỗi
             return errs; // Trả về danh sách lỗi
+        }
+
+        /// <summary>Một điểm vẽ lên ảnh xem trước: toạ độ 0..1, bán kính (theo cạnh ngắn), nhãn phím, kiểu, điểm cuối (vuốt).</summary>
+        public class Mark { public double X, Y, R, X2 = -1, Y2 = -1; public string Label, Kind; }
+
+        /// <summary>Đọc keymap ra danh sách điểm để vẽ (bỏ qua dòng lỗi). Phím không có vị trí (macro/toggle) -> X = -1.</summary>
+        public static List<Mark> Marks(string text)
+        {
+            var r = new List<Mark>();
+            foreach (var raw in text.Replace("\r", "").Split('\n'))
+            {
+                string line = raw; int c = line.IndexOf('#'); if (c >= 0) line = line.Substring(0, c);
+                var a = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (a.Length < 2) continue;
+                string op = a[0].ToLowerInvariant();
+                try
+                {
+                    if (op == "tap") r.Add(new Mark { Kind = "tap", Label = a[1], X = D(a[2]), Y = D(a[3]), R = a.Length > 4 ? D(a[4]) : 0.012 });
+                    else if (op == "joy") r.Add(new Mark { Kind = "joy", Label = a[1] + " " + a[2] + " " + a[3] + " " + a[4], X = D(a[5]), Y = D(a[6]), R = D(a[7]) });
+                    else if (op == "macro") r.Add(new Mark { Kind = "macro", Label = a[1] + " → macro " + a[2], X = -1 });
+                    else if (op == "toggle") r.Add(new Mark { Kind = "toggle", Label = a[1] + " → bật/tắt map", X = -1 });
+                    else if (op == "combo" || op == "repeat")
+                    {
+                        int p0 = line.IndexOf(a[0], StringComparison.Ordinal) + a[0].Length;
+                        string body = line.Substring(line.IndexOf(a[1], p0, StringComparison.Ordinal) + a[1].Length);
+                        var m = DsoftEmu.Macro.Parse("x", body.Replace(';', '\n'), new List<string>());
+                        int i = 0, nPos = m.Steps.FindAll(s => s.Key != "wait").Count;
+                        foreach (var s in m.Steps)
+                        {
+                            if (s.Key == "wait") continue;
+                            var v = s.Value; string lb = a[1] + (nPos > 1 ? "·" + (++i) : "");
+                            if (s.Key == "swipe") r.Add(new Mark { Kind = op, Label = lb, X = v[0], Y = v[1], X2 = v[2], Y2 = v[3], R = 0.012 });
+                            else r.Add(new Mark { Kind = op, Label = lb, X = v[0], Y = v[1], R = 0.012 });
+                        }
+                    }
+                }
+                catch { } // Dòng lỗi: bỏ qua khi vẽ
+            }
+            return r;
         }
 
         // Cài hook bàn phím mức thấp toàn hệ thống (chỉ cài một lần)
@@ -193,7 +248,10 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         void ReleaseAll()
         {
             foreach (var b in binds) // Duyệt mọi gán phím
+            {
                 if (b.Active) { touch.Raw(1, b.Id, b.CurX, b.CurY); b.Active = false; } // Đang chạm -> gửi sự kiện nhả (action 1)
+                if (b.Seq != null) MacroRunner.Stop(b.Seq.Name); // Dừng combo/repeat đang chạy
+            }
             down.Clear(); // Xoá danh sách phím đang giữ
         }
 
@@ -231,6 +289,12 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                         touch.Raw(1, b.Id, b.CurX, b.CurY); // Gửi sự kiện nhả (action 1) tại vị trí cũ
                         b.Active = false; // Bỏ đánh dấu đang chạm
                     }
+                    break;
+                case Kind.Combo: // Bấm = chạy chuỗi 1 lần (đang chạy thì bỏ qua lần bấm này)
+                    if (isDown && !MacroRunner.IsRunning(b.Seq.Name)) MacroRunner.Start(b.Seq, touch);
+                    break;
+                case Kind.Repeat: // Giữ = lặp chuỗi, nhả = dừng
+                    if (isDown) MacroRunner.Start(b.Seq, touch); else MacroRunner.Stop(b.Seq.Name);
                     break;
                 case Kind.Joy: // Phím joystick
                     if (touch.Ready) Joy(b); // Kênh chạm sẵn sàng -> cập nhật vị trí joystick

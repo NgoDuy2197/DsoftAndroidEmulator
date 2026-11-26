@@ -10,6 +10,9 @@
 #   joy    <Lên> <Trái> <Xuống> <Phải> cx cy bán_kính   joystick
 #   macro  <Phím> <tên_macro>                   bật/tắt macro trong thư mục macros
 #   toggle <Phím>                               bật/tắt toàn bộ map phím
+#   combo  <Phím> bước; bước; ...               bấm = chạy chuỗi 1 lần (bước như macro: tap/dtap/hold/swipe/wait)
+#   repeat <Phím> bước; bước; ...               giữ = lặp chuỗi, nhả = dừng
+# Nút "Mẫu ▾" chèn sẵn bộ phím cho game hành động / bắn súng / nhập vai.
 
 toggle F12
 

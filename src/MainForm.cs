@@ -199,15 +199,16 @@ namespace DsoftEmu
             bAdb = SideBtn(side, "ADB", (s, e) => ToggleAdb(), "ADB tắt: game không thấy USB debugging, nhưng map phím / auto click / số liệu / cài APK không dùng được.");
             // Tiêu đề nhóm thao tác nhanh
             side.Controls.Add(new Label { Text = "THAO TÁC NHANH", ForeColor = Color.Gray, AutoSize = false, Width = 200, Height = 26, Padding = new Padding(18, 8, 0, 0), Font = new Font("Segoe UI", 8f) });
+            // Thứ tự: Lớp phủ tối -> Phóng to -> Thu nhỏ -> Chụp gửi Discord -> các nút còn lại
+            bFilter = SideBtn(side, "◑  Lớp phủ tối: Tắt", (s, e) => ToggleFilter(),
+                "Phủ lên cửa sổ giả lập của máy đang chọn: làm tối + đen trắng (chỉnh ở trang Cấu hình). Chuột/phím vẫn bấm xuyên qua; không đổi gì trong Android, ảnh gửi Discord vẫn có màu.");
+            bMax = SideBtn(side, "⛶  Phóng to cửa sổ", (s, e) => ToggleEmuMax(), "Phóng cửa sổ giả lập của máy đang chọn vừa màn hình (giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
+            bMini = SideBtn(side, "▭  Thu nhỏ cửa sổ", (s, e) => ToggleEmuMini(), "Thu cửa sổ giả lập của máy đang chọn về cỡ nhỏ (cạnh dài 360px, giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
+            bShot = SideBtn(side, "▣  Chụp gửi Discord", (s, e) => ShotToDiscord(), "Chụp màn hình Android và gửi qua webhook Discord (không cần ADB). Cấu hình ở trang Cấu hình.");
             bNet = SideBtn(side, "⇄  Làm mới mạng", (s, e) => RefreshNet(), "Tắt/bật lại Wi-Fi ảo trong Android (~15s). Dùng khi mạng chậm/mất.");
             bSave = SideBtn(side, "⬇  Lưu trạng thái", (s, e) => SaveState(), "Lưu trạng thái hiện tại (Android đứng hình ~10-20s).");
             bLoad = SideBtn(side, "↺  Chạy từ bản lưu", (s, e) => RestartEmu(true), "Tắt rồi bật lại đúng trạng thái đã lưu.");
             bRestart = SideBtn(side, "⟳  Khởi động lại nhanh", (s, e) => RestartEmu(false), "Tắt rồi bật lại bằng Quick Boot, giữ nguyên trạng thái (~20-30s). Dùng khi chạy lâu bị chậm.");
-            bShot = SideBtn(side, "▣  Chụp gửi Discord", (s, e) => ShotToDiscord(), "Chụp màn hình Android và gửi qua webhook Discord (không cần ADB). Cấu hình ở trang Cấu hình.");
-            bMax = SideBtn(side, "⛶  Phóng to cửa sổ", (s, e) => ToggleEmuMax(), "Phóng cửa sổ giả lập của máy đang chọn vừa màn hình (giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
-            bMini = SideBtn(side, "▭  Thu nhỏ cửa sổ", (s, e) => ToggleEmuMini(), "Thu cửa sổ giả lập của máy đang chọn về cỡ nhỏ (cạnh dài 360px, giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
-            bFilter = SideBtn(side, "◑  Lớp phủ tối: Tắt", (s, e) => ToggleFilter(),
-                "Phủ lên cửa sổ giả lập của máy đang chọn: làm tối + đen trắng (chỉnh ở trang Cấu hình). Chuột/phím vẫn bấm xuyên qua; không đổi gì trong Android, ảnh gửi Discord vẫn có màu.");
             bDisp = SideBtn(side, "◐  Hiển thị: Mặc định", (s, e) => ApplyDisplay(emu.Display == "afk" ? "play" : "afk"),
                 "Chuyển máy đang chọn giữa hồ sơ hiển thị Mặc định và Treo máy (độ phân giải thấp, nhẹ máy). Đang chạy thì phải khởi động NGUỘI (game bị đóng). Giá trị ở trang Cấu hình.");
             return side;  // Trả về thanh bên
@@ -1638,6 +1639,16 @@ namespace DsoftEmu
             };
             Btn(bar, "Lưu && áp dụng  (Ctrl+S)", (s, e) => ApplyKeymap(true), CBlue);  // "&&" hiển thị thành "&" trên nút
             Btn(bar, "Lấy toạ độ từ màn hình...", (s, e) => Pick(keyEdit));  // Nút lấy toạ độ từ ảnh chụp màn hình
+            Btn(bar, "◎ Xem phím trên màn hình", (s, e) => ShowKeyView());  // Ảnh màn hình + vòng tròn vị trí bấm kèm tên phím
+            keyEdit.TextChanged += (s, e) => { if (keyView != null) keyView.Redraw(); };
+            // Nút Mẫu: chèn đoạn keymap mẫu (kèm combo/repeat) vào vị trí con trỏ
+            TemplateBtn(bar, Templates.Keymap.Select(t => new KeyValuePair<string, Action>(t[0], () =>
+            {
+                string txt = Crlf(t[1]);
+                if (keyEdit.SelectionStart > 0 && !keyEdit.Text.Substring(0, keyEdit.SelectionStart).EndsWith("\n")) txt = "\r\n" + txt;
+                keyEdit.SelectedText = txt; keyEdit.Focus();
+                Log.I("Đã chèn mẫu '" + t[0] + "' - sửa toạ độ rồi Lưu && áp dụng (Ctrl+S).");
+            })));
             bar.Controls.Add(inputLbl);  // Nhãn trạng thái input
             // Ctrl+S trong ô soạn = lưu và áp dụng
             keyEdit.KeyDown += (s, e) => { if (e.Control && e.KeyCode == Keys.S) { ApplyKeymap(true); e.SuppressKeyPress = true; } };
@@ -1651,15 +1662,57 @@ namespace DsoftEmu
             foreach (var e in mapper.Load(keyEdit.Text)) Log.I("  keymap " + e);  // Nạp keymap, ghi log từng lỗi
         }
 
+        // Nút "Mẫu ▾" mở menu chọn mẫu
+        void TemplateBtn(Control bar, IEnumerable<KeyValuePair<string, Action>> items)
+        {
+            var menu = new ContextMenuStrip();
+            foreach (var it in items) { var a = it.Value; menu.Items.Add(it.Key, null, (s, e) => a()); }
+            Button b = null;
+            b = Btn(bar, "Mẫu ▾", (s, e) => menu.Show(b, new Point(0, b.Height)));
+        }
+
+        static bool IsPng(byte[] b)
+        {
+            return b != null && b.Length > 100 && b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47;
+        }
+
         // Mở cửa sổ chọn toạ độ trên ảnh chụp màn hình, chèn kết quả vào ô soạn
         void Pick(TextBox target)
         {
+            new PickerForm(Grabber(), t => UI(() => { target.SelectedText = t; target.Focus(); })).Show(this);
+        }
+
+        // Xem map phím: ảnh màn hình + vòng tròn/tên phím theo nội dung ô soạn (sửa là vẽ lại ngay)
+        PickerForm keyView;
+        void ShowKeyView()
+        {
+            if (keyView != null && !keyView.IsDisposed) { keyView.Activate(); return; }
+            keyView = new PickerForm(Grabber(), t => UI(() => { keyEdit.SelectedText = t; keyEdit.Focus(); }), () => KeyMapper.Marks(keyEdit.Text));
+            keyView.Show(this);
+        }
+
+        // Hàm chụp màn hình máy đang chọn: ADB trước, lỗi thì console emulator
+        Func<byte[]> Grabber()
+        {
             // Có ADB: chụp qua adb (đúng hướng xoay). Không có: chụp qua console emulator (hướng gốc - đúng khi game chạy ngang như cấu hình)
-            Func<byte[]> grab;
-            if (AdbReady) grab = emu.NewAdb().Screencap;
-            else { int port = emu.Port; grab = () => EmuConsoleConn.Screenshot(port); }
-            // Chọn xong thì chèn chuỗi toạ độ vào vị trí con trỏ
-            new PickerForm(grab, t => UI(() => { target.SelectedText = t; target.Focus(); })).Show(this);
+            // ADB lỗi/offline (vd USB debugging bị tắt) thì tự chuyển sang console
+            bool useAdb = AdbReady; var adb = useAdb ? emu.NewAdb() : null; int port = emu.Port;
+            Func<byte[]> grab = () =>
+            {
+                if (useAdb)
+                {
+                    try
+                    {
+                        var b = adb.Screencap();
+                        if (IsPng(b)) return b;
+                        Log.I("Chụp qua ADB không ra ảnh (adb offline?) - thử qua console emulator");
+                    }
+                    catch (Exception ex) { Log.I("Chụp qua ADB lỗi: " + ex.Message + " - thử qua console emulator"); }
+                }
+                try { return EmuConsoleConn.Screenshot(port); }
+                catch (Exception ex) { Log.I("Chụp màn hình lỗi: " + ex.Message); throw; }
+            };
+            return grab;
         }
 
         // =============== Auto click ===============
@@ -1676,6 +1729,17 @@ namespace DsoftEmu
             Btn(bar, "Mới", (s, e) => NewMacro());  // Nút tạo macro mới
             Btn(bar, "Lưu (Ctrl+S)", (s, e) => SaveMacro(), CBlue);  // Nút lưu macro
             Btn(bar, "Lấy toạ độ...", (s, e) => Pick(macroEdit));  // Nút lấy toạ độ
+            // Nút Mẫu: tạo file macro mới từ mẫu (trùng tên thì thêm số)
+            TemplateBtn(bar, Templates.Macros.Select(t => new KeyValuePair<string, Action>(t[1], () =>
+            {
+                Directory.CreateDirectory(MacroDir);
+                string name = t[0];
+                for (int i = 2; File.Exists(Path.Combine(MacroDir, name + ".txt")); i++) name = t[0] + "_" + i;
+                File.WriteAllText(Path.Combine(MacroDir, name + ".txt"), Crlf(t[2]));
+                RefreshMacroList();
+                macroList.SelectedItem = name;
+                Log.I("Đã tạo macro '" + name + "' từ mẫu - sửa toạ độ rồi Lưu (Ctrl+S).");
+            })));
             // Nút xoá macro đang chọn sau khi xác nhận
             Btn(bar, "Xoá", (s, e) =>
             {

@@ -19,6 +19,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
     {
         public string Name; // Tên macro (dùng làm khoá khi chạy/dừng)
         public int Loop = 1; // Số vòng lặp, mặc định 1; 0 = vô hạn
+        public bool Quiet; // Không ghi log chạy/dừng (combo phím bấm liên tục)
         public double BreakPct; // Xác suất (%) nghỉ dài cuối mỗi vòng
         public int BreakMin, BreakMax; // Thời gian nghỉ dài tối thiểu/tối đa (ms)
         // Danh sách bước: Key = tên lệnh (tap/dtap/hold/swipe/wait), Value = mảng tham số số
@@ -114,7 +115,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         static void Run(Macro m, TouchService t, long id, CancellationTokenSource cts)
         {
             var ct = cts.Token; // Token huỷ để truyền vào các thao tác chờ
-            Log.I("▶ Macro '" + m.Name + "' chạy (" + (m.Loop == 0 ? "vô hạn" : m.Loop + " vòng") + ")"); // Ghi log bắt đầu
+            if (!m.Quiet) Log.I("▶ Macro '" + m.Name + "' chạy (" + (m.Loop == 0 ? "vô hạn" : m.Loop + " vòng") + ")"); // Ghi log bắt đầu
             int iter = 0; // Số vòng đã chạy
             try
             {
@@ -163,7 +164,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
             finally // Luôn chạy khi kết thúc
             {
                 lock (running) running.Remove(m.Name); // Gỡ macro khỏi bảng đang chạy
-                Log.I("■ Macro '" + m.Name + "' dừng sau " + iter + " vòng"); // Ghi log số vòng đã chạy
+                if (!m.Quiet) Log.I("■ Macro '" + m.Name + "' dừng sau " + iter + " vòng"); // Ghi log số vòng đã chạy
                 Fire(); // Báo giao diện cập nhật
             }
         }
