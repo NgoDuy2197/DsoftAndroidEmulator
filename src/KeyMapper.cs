@@ -19,7 +19,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
     /// </summary>
     public class KeyMapper : IDisposable
     {
-        enum Kind { Tap, Joy, Macro, Toggle, Combo, Repeat } // Loại gán phím: chạm, joystick, chạy macro, bật/tắt map
+        enum Kind { Tap, Joy, Macro, Toggle, Combo, Repeat, Hud } // Loại gán phím: chạm, joystick, chạy macro, bật/tắt map
 
         // Một dòng gán phím đã parse cùng trạng thái chạm hiện tại
         class Bind
@@ -46,6 +46,7 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
 
         public volatile bool Enabled = true; // Map phím đang bật hay tắt
         public Action<string> ToggleMacro; // Callback bật/tắt macro theo tên (do form gán)
+        public Action ToggleHud; // Callback ẩn/hiện tên phím trên cửa sổ giả lập (do form gán)
 
         // Khởi tạo: lưu dịch vụ chạm, tạo delegate hook và chạy thread xử lý phím
         public KeyMapper(TouchService t)
@@ -111,6 +112,9 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                                 b.Seq.Loop = rp ? 0 : 1; b.Seq.Quiet = true; b.Seq.BreakPct = 0;
                             }
                             break;
+                        case "hud": // hud <Key>: ẩn/hiện tên phím trên cửa sổ giả lập
+                            b.K = Kind.Hud; b.Vk = new[] { Vk(a[1]) };
+                            break;
                         case "toggle": // toggle <Key>
                             b.K = Kind.Toggle; b.Vk = new[] { Vk(a[1]) }; // Phím bật/tắt toàn bộ map phím
                             break;
@@ -139,43 +143,135 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         }
 
         /// <summary>Một điểm vẽ lên ảnh xem trước: toạ độ 0..1, bán kính (theo cạnh ngắn), nhãn phím, kiểu, điểm cuối (vuốt).</summary>
-        public class Mark { public double X, Y, R, X2 = -1, Y2 = -1; public string Label, Kind; }
+        /// <summary>Một điểm vẽ lên ảnh xem trước: toạ độ 0..1, bán kính (theo cạnh ngắn), nhãn phím, kiểu, điểm cuối (vuốt).
+        /// Line = số dòng (0..) trong keymap, Step = vị trí đoạn trong combo/repeat (tách bằng ;), -1 nếu không phải combo.</summary>
+        public class Mark { public double X, Y, R, X2 = -1, Y2 = -1; public string Label, Key, Kind; public int Line, Step = -1; }
 
-        /// <summary>Đọc keymap ra danh sách điểm để vẽ (bỏ qua dòng lỗi). Phím không có vị trí (macro/toggle) -> X = -1.</summary>
+        // Tách dòng thành phần lệnh và phần chú thích (#...)
+        static void SplitComment(string raw, out string code, out string comment)
+        {
+            int c = raw.IndexOf('#');
+            code = c >= 0 ? raw.Substring(0, c) : raw;
+            comment = c >= 0 ? raw.Substring(c) : "";
+        }
+
+        static string[] Tok(string s) { return s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries); }
+
+        // Phần sau tên phím của combo/repeat (chuỗi bước)
+        static string Body(string code, string[] a)
+        {
+            int p0 = code.IndexOf(a[0], StringComparison.Ordinal) + a[0].Length;
+            return code.Substring(code.IndexOf(a[1], p0, StringComparison.Ordinal) + a[1].Length);
+        }
+
+        /// <summary>Đọc keymap ra danh sách điểm để vẽ (bỏ qua dòng lỗi). Phím không có vị trí (macro/toggle/hud) -> X = -1.</summary>
         public static List<Mark> Marks(string text)
         {
             var r = new List<Mark>();
-            foreach (var raw in text.Replace("\r", "").Split('\n'))
+            var lines = text.Replace("\r", "").Split('\n');
+            for (int ln = 0; ln < lines.Length; ln++)
             {
-                string line = raw; int c = line.IndexOf('#'); if (c >= 0) line = line.Substring(0, c);
-                var a = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                string line, cm; SplitComment(lines[ln], out line, out cm);
+                var a = Tok(line);
                 if (a.Length < 2) continue;
                 string op = a[0].ToLowerInvariant();
                 try
                 {
-                    if (op == "tap") r.Add(new Mark { Kind = "tap", Label = a[1], X = D(a[2]), Y = D(a[3]), R = a.Length > 4 ? D(a[4]) : 0.012 });
-                    else if (op == "joy") r.Add(new Mark { Kind = "joy", Label = a[1] + " " + a[2] + " " + a[3] + " " + a[4], X = D(a[5]), Y = D(a[6]), R = D(a[7]) });
-                    else if (op == "macro") r.Add(new Mark { Kind = "macro", Label = a[1] + " → macro " + a[2], X = -1 });
-                    else if (op == "toggle") r.Add(new Mark { Kind = "toggle", Label = a[1] + " → bật/tắt map", X = -1 });
+                    if (op == "tap") r.Add(new Mark { Kind = "tap", Key = a[1], Label = a[1], X = D(a[2]), Y = D(a[3]), R = a.Length > 4 ? D(a[4]) : 0.012, Line = ln });
+                    else if (op == "joy") r.Add(new Mark { Kind = "joy", Key = a[1], Label = a[1] + " " + a[2] + " " + a[3] + " " + a[4], X = D(a[5]), Y = D(a[6]), R = D(a[7]), Line = ln });
+                    else if (op == "macro") r.Add(new Mark { Kind = "macro", Key = a[1], Label = a[1] + " → macro " + a[2], X = -1, Line = ln });
+                    else if (op == "toggle") r.Add(new Mark { Kind = "toggle", Key = a[1], Label = a[1] + " → bật/tắt map", X = -1, Line = ln });
+                    else if (op == "hud") r.Add(new Mark { Kind = "hud", Key = a[1], Label = a[1] + " → ẩn/hiện tên phím", X = -1, Line = ln });
                     else if (op == "combo" || op == "repeat")
                     {
-                        int p0 = line.IndexOf(a[0], StringComparison.Ordinal) + a[0].Length;
-                        string body = line.Substring(line.IndexOf(a[1], p0, StringComparison.Ordinal) + a[1].Length);
-                        var m = DsoftEmu.Macro.Parse("x", body.Replace(';', '\n'), new List<string>());
-                        int i = 0, nPos = m.Steps.FindAll(s => s.Key != "wait").Count;
-                        foreach (var s in m.Steps)
+                        var parts = Body(line, a).Split(';');
+                        var pos = new List<Mark>();
+                        for (int i = 0; i < parts.Length; i++)
                         {
-                            if (s.Key == "wait") continue;
-                            var v = s.Value; string lb = a[1] + (nPos > 1 ? "·" + (++i) : "");
-                            if (s.Key == "swipe") r.Add(new Mark { Kind = op, Label = lb, X = v[0], Y = v[1], X2 = v[2], Y2 = v[3], R = 0.012 });
-                            else r.Add(new Mark { Kind = op, Label = lb, X = v[0], Y = v[1], R = 0.012 });
+                            var m = DsoftEmu.Macro.Parse("x", parts[i], new List<string>());
+                            if (m.Steps.Count == 0 || m.Steps[0].Key == "wait") continue;
+                            var v = m.Steps[0].Value;
+                            var mk = new Mark { Kind = op, Key = a[1], X = v[0], Y = v[1], R = 0.012, Line = ln, Step = i };
+                            if (m.Steps[0].Key == "swipe") { mk.X2 = v[2]; mk.Y2 = v[3]; }
+                            pos.Add(mk);
                         }
+                        for (int i = 0; i < pos.Count; i++) pos[i].Label = a[1] + (pos.Count > 1 ? "·" + (i + 1) : "");
+                        r.AddRange(pos);
                     }
                 }
                 catch { } // Dòng lỗi: bỏ qua khi vẽ
             }
             return r;
         }
+
+        static string F3(double v) { return Math.Max(0, Math.Min(1, v)).ToString("0.000", CultureInfo.InvariantCulture); }
+
+        /// <summary>Dời điểm m tới (nx, ny) trong nội dung keymap (vuốt thì dời cả điểm cuối theo cùng độ lệch). Trả nội dung mới.</summary>
+        public static string Move(string text, Mark m, double nx, double ny)
+        {
+            var lines = text.Replace("\r", "").Split('\n');
+            if (m.Line < 0 || m.Line >= lines.Length) return text;
+            string code, cm; SplitComment(lines[m.Line], out code, out cm);
+            var a = Tok(code);
+            string op = a[0].ToLowerInvariant(), nl;
+            if (op == "tap") { a[2] = F3(nx); a[3] = F3(ny); nl = string.Join(" ", a); }
+            else if (op == "joy") { a[5] = F3(nx); a[6] = F3(ny); nl = string.Join(" ", a); }
+            else if ((op == "combo" || op == "repeat") && m.Step >= 0)
+            {
+                var parts = Body(code, a).Split(';');
+                if (m.Step >= parts.Length) return text;
+                var t = Tok(parts[m.Step]);
+                double ox = D(t[1]), oy = D(t[2]);
+                t[1] = F3(nx); t[2] = F3(ny);
+                if (t[0].ToLowerInvariant() == "swipe" && t.Length > 4) { t[3] = F3(D(t[3]) + nx - ox); t[4] = F3(D(t[4]) + ny - oy); }
+                parts[m.Step] = " " + string.Join(" ", t);
+                nl = a[0] + " " + a[1] + "  " + string.Join(";", parts).Trim();
+            }
+            else return text;
+            lines[m.Line] = nl + (cm.Length > 0 ? "   " + cm : "");
+            return string.Join("\r\n", lines);
+        }
+
+        /// <summary>Đổi phím của dòng (không áp dụng cho joy). Trả nội dung mới.</summary>
+        public static string Rekey(string text, int line, string key)
+        {
+            var lines = text.Replace("\r", "").Split('\n');
+            if (line < 0 || line >= lines.Length) return text;
+            string code, cm; SplitComment(lines[line], out code, out cm);
+            var a = Tok(code);
+            if (a.Length < 2 || a[0].ToLowerInvariant() == "joy") return text;
+            int p0 = code.IndexOf(a[0], StringComparison.Ordinal) + a[0].Length;
+            int k = code.IndexOf(a[1], p0, StringComparison.Ordinal);
+            lines[line] = code.Substring(0, k) + key + code.Substring(k + a[1].Length) + cm;
+            return string.Join("\r\n", lines);
+        }
+
+        /// <summary>Xoá một dòng. Trả nội dung mới.</summary>
+        public static string RemoveLine(string text, int line)
+        {
+            var lines = new List<string>(text.Replace("\r", "").Split('\n'));
+            if (line >= 0 && line < lines.Count) lines.RemoveAt(line);
+            return string.Join("\r\n", lines);
+        }
+
+        /// <summary>Các dòng (không phải joy) đang dùng phím key.</summary>
+        public static List<int> LinesUsing(string text, string key)
+        {
+            var r = new List<int>();
+            var lines = text.Replace("\r", "").Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string code, cm; SplitComment(lines[i], out code, out cm);
+                var a = Tok(code);
+                if (a.Length < 2) continue;
+                if (a[0].ToLowerInvariant() == "joy") { for (int j = 1; j <= 4 && j < a.Length; j++) if (a[j].Equals(key, StringComparison.OrdinalIgnoreCase)) r.Add(i); }
+                else if (a[1].Equals(key, StringComparison.OrdinalIgnoreCase)) r.Add(i);
+            }
+            return r;
+        }
+
+        /// <summary>Tên phím hợp lệ cho keymap (theo enum Keys).</summary>
+        public static bool ValidKey(string name) { Keys k; return Enum.TryParse(name, true, out k); }
 
         // Cài hook bàn phím mức thấp toàn hệ thống (chỉ cài một lần)
         public void Install()
@@ -289,6 +385,9 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
                         touch.Raw(1, b.Id, b.CurX, b.CurY); // Gửi sự kiện nhả (action 1) tại vị trí cũ
                         b.Active = false; // Bỏ đánh dấu đang chạm
                     }
+                    break;
+                case Kind.Hud: // Ẩn/hiện tên phím trên cửa sổ giả lập
+                    if (isDown && ToggleHud != null) ToggleHud();
                     break;
                 case Kind.Combo: // Bấm = chạy chuỗi 1 lần (đang chạy thì bỏ qua lần bấm này)
                     if (isDown && !MacroRunner.IsRunning(b.Seq.Name)) MacroRunner.Start(b.Seq, touch);

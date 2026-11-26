@@ -12,9 +12,11 @@
 #   toggle <Phím>                               bật/tắt toàn bộ map phím
 #   combo  <Phím> bước; bước; ...               bấm = chạy chuỗi 1 lần (bước như macro: tap/dtap/hold/swipe/wait)
 #   repeat <Phím> bước; bước; ...               giữ = lặp chuỗi, nhả = dừng
+#   hud    <Phím>                               ẩn/hiện tên phím trên cửa sổ giả lập
 # Nút "Mẫu ▾" chèn sẵn bộ phím cho game hành động / bắn súng / nhập vai.
 
 toggle F12
+hud F11
 
 joy W A S D  0.150 0.750 0.090
 

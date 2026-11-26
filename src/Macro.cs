@@ -1,6 +1,7 @@
 using System; // Kiểu cơ bản: String, Exception, Action...
 using System.Collections.Generic; // List, Dictionary, KeyValuePair
 using System.Globalization; // CultureInfo, NumberStyles để parse số
+using System.Linq; // Count
 using System.Threading; // Thread, CancellationToken, Interlocked
 
 namespace DsoftEmu // Không gian tên chung của ứng dụng
@@ -74,6 +75,9 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         public static event Action Changed; // Sự kiện báo khi danh sách macro đang chạy thay đổi
 
         static void Fire() { var h = Changed; if (h != null) h(); } // Gọi sự kiện Changed an toàn (chép ra biến tạm trước)
+
+        /// <summary>Số macro người dùng đang chạy (không tính combo/repeat của map phím).</summary>
+        public static int UserCount { get { lock (running) return running.Keys.Count(k => !k.StartsWith("phím ")); } }
 
         public static bool IsRunning(string name) { lock (running) return running.ContainsKey(name); } // Kiểm tra macro có đang chạy không
 

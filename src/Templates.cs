@@ -10,6 +10,7 @@ namespace DsoftEmu
 @"# ===== combo / repeat =====
 #   combo  <Phím> bước; bước; ...   bấm 1 lần = chạy chuỗi 1 lần (đang chạy thì bỏ qua)
 #   repeat <Phím> bước; bước; ...   GIỮ phím = lặp chuỗi liên tục, NHẢ = dừng
+#   hud    <Phím>                   ẩn/hiện tên phím đè lên cửa sổ giả lập
 # Bước dùng cú pháp macro: tap x y [r] | dtap x y [r] | hold x y minMs maxMs [r]
 #                          swipe x1 y1 x2 y2 minMs maxMs | wait minMs [maxMs]
 # Ví dụ:
@@ -20,6 +21,7 @@ namespace DsoftEmu
             new[] { "Game hành động / MOBA (WASD + kỹ năng + combo)",
 @"# ===== Hành động / MOBA =====
 toggle F12                                   # bật/tắt map phím
+hud F11                                      # ẩn/hiện tên phím trên giả lập
 joy W A S D   0.150 0.750 0.090              # joystick di chuyển
 
 tap Space  0.900 0.780 0.015                 # đánh thường

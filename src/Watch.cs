@@ -125,7 +125,12 @@ namespace DsoftEmu // Không gian tên chung của app
         // Trạng thái từng mục: số lần lỗi liên tiếp, đang báo lỗi chưa, từ lúc nào
         class Probe { public int Bad, Good; public bool Down; public DateTime Since; }
         readonly Probe pcNet = new Probe(), pcSlow = new Probe(), ram = new Probe(), disk = new Probe();
-        class Inst { public Probe Console = new Probe(), DroidNet = new Probe(); public bool Crashed, BootSlowSent; }
+        class Inst
+        {
+            public Probe Console = new Probe(), DroidNet = new Probe(); public bool Crashed, BootSlowSent;
+            // Phát hiện đứng hình: dấu vân ảnh lúc bắt đầu đứng yên, từ lúc nào, đã báo chưa, lần chụp tới
+            public byte[] Fp; public DateTime SameSince, NextFreeze; public bool Frozen;
+        }
         readonly Dictionary<EmulatorController, Inst> inst = new Dictionary<EmulatorController, Inst>();
         DateTime nextCheck, nextShot = DateTime.MaxValue;
         int shotMinApplied = -1;
@@ -144,6 +149,8 @@ namespace DsoftEmu // Không gian tên chung của app
         int SendScanSec { get { return Math.Max(2, S.GetInt("SendScanSec", 10)); } }
         int SlowMs { get { return Math.Max(50, S.GetInt("WatchSlowMs", 300)); } }
         string PingHost { get { return S.Get("PingHost", "8.8.8.8"); } }
+        int FreezeMin { get { return Math.Max(0, S.GetInt("FreezeMin", 10)); } } // Đứng hình bao lâu thì báo (0 = tắt)
+        bool ShotStats { get { return S.GetBool("ShotStats", true); } } // Ảnh định kỳ kèm dòng tài nguyên
         // Lịch thử lại (phút), vd "1,3,5" = thử lại 3 lần sau 1, 3, 5 phút; rỗng = không thử lại
         int[] RetryMins
         {
@@ -216,7 +223,13 @@ namespace DsoftEmu // Không gian tên chung của app
             if (ShotMin > 0 && now >= nextShot)
             {
                 nextShot = now.AddMinutes(ShotMin);
-                if (all.Any(Shootable)) SendShot("Ảnh định kỳ (mỗi " + ShotMin + " phút)", false);
+                if (all.Any(Shootable))
+                {
+                    string cap = "Ảnh định kỳ (mỗi " + ShotMin + " phút)";
+                    // Dòng tài nguyên: lỗi gì cũng bỏ qua, không được làm hỏng tin ảnh
+                    if (ShotStats) try { string r = ResourceLine(all); if (r.Length > 0) cap += "\n📊 " + r; } catch { }
+                    SendShot(cap, false);
+                }
             }
 
             if (now < nextCheck) return;
@@ -230,6 +243,7 @@ namespace DsoftEmu // Không gian tên chung của app
             {
                 CheckConsole(e);
                 CheckDroidNet(e);
+                try { CheckFreeze(e); } catch (Exception ex) { Log.I("Kiểm tra đứng hình lỗi: " + ex.Message); }
                 var s = St(e);
                 if (!e.IsBooted && !s.BootSlowSent && (now - e.StartedAt).TotalMinutes > 6)
                 {
@@ -272,6 +286,114 @@ namespace DsoftEmu // Không gian tên chung của app
                 d => Alert("🟢", Who(e) + "Android có mạng lại · mất " + Dur(d), null, false));
         }
 
+        // Đứng hình: chụp mỗi >= 60 giây, so với ảnh lúc bắt đầu đứng yên; không đổi đủ FreezeMin phút -> báo kèm ảnh
+        void CheckFreeze(EmulatorController e)
+        {
+            var s = St(e);
+            int fm = FreezeMin;
+            if (fm <= 0 || !e.IsBooted || s.Console.Down) { s.Fp = null; s.Frozen = false; return; } // Tắt / chưa boot / emulator treo (đã có cảnh báo riêng)
+            var now = DateTime.Now;
+            if (now < s.NextFreeze) return;
+            s.NextFreeze = now.AddSeconds(Math.Max(60, CheckSec));
+            var png = TakeShot(e, false);
+            var fp = Fingerprint(png);
+            if (fp == null) return;
+            if (s.Fp != null && Same(s.Fp, fp))
+            {
+                var still = now - s.SameSince;
+                if (!s.Frozen && still.TotalMinutes >= fm)
+                {
+                    s.Frozen = true;
+                    var m = new Msg { At = now, Icon = "🟠", Text = Who(e) + "Màn hình đứng yên " + Dur(still) + " (game treo / mất kết nối / bị văng?)" };
+                    Log.I("Giám sát: " + m.Text);
+                    if (AlertShot && png != null) m.Shots.Add(new Shot { Label = e.Label, Png = png });
+                    Enqueue(m, false);
+                }
+                return;
+            }
+            if (s.Frozen) Alert("🟢", Who(e) + "Màn hình chạy lại · đứng yên " + Dur(now - s.SameSince), null, false);
+            s.Frozen = false; s.Fp = fp; s.SameSince = now;
+        }
+
+        // Dấu vân ảnh: thu về 64x36 thang xám
+        static byte[] Fingerprint(byte[] png)
+        {
+            if (png == null) return null;
+            try
+            {
+                using (var ms = new MemoryStream(png))
+                using (var src = new Bitmap(ms))
+                using (var small = new Bitmap(64, 36))
+                {
+                    using (var g = Graphics.FromImage(small)) { g.InterpolationMode = InterpolationMode.HighQualityBilinear; g.DrawImage(src, 0, 0, 64, 36); }
+                    var r = new byte[64 * 36];
+                    for (int y = 0; y < 36; y++)
+                        for (int x = 0; x < 64; x++) { var c = small.GetPixel(x, y); r[y * 64 + x] = (byte)((c.R * 299 + c.G * 587 + c.B * 114) / 1000); }
+                    return r;
+                }
+            }
+            catch { return null; }
+        }
+
+        // Giống nhau: chênh lệch trung bình < 1 mức xám (đồng hồ thanh trạng thái đổi vài ô vẫn tính là đứng yên)
+        static bool Same(byte[] a, byte[] b)
+        {
+            long d = 0;
+            for (int i = 0; i < a.Length; i++) d += Math.Abs(a[i] - b[i]);
+            return d < a.Length;
+        }
+
+        // Dòng tài nguyên ngắn cho ảnh định kỳ; mục nào lấy được thì thêm
+        string ResourceLine(IList<EmulatorController> all)
+        {
+            var p = new List<string>();
+            try { int cpu = CpuPct(); if (cpu >= 0) p.Add("CPU " + cpu + "%"); } catch { }
+            try
+            {
+                var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX)) };
+                if (GlobalMemoryStatusEx(ref m))
+                    p.Add("RAM " + ((m.ullTotalPhys - m.ullAvailPhys) / 1073741824.0).ToString("0.0") + "/" + (m.ullTotalPhys / 1073741824.0).ToString("0.0") + " GB");
+            }
+            catch { }
+            try
+            {
+                long q = 0;
+                foreach (var pr in System.Diagnostics.Process.GetProcesses())
+                    using (pr) try { if (pr.ProcessName.StartsWith("qemu-system", StringComparison.OrdinalIgnoreCase)) q += pr.WorkingSet64; } catch { }
+                if (q > 0) p.Add("giả lập dùng " + (q / 1073741824.0).ToString("0.0") + " GB");
+            }
+            catch { }
+            try
+            {
+                var any = all.FirstOrDefault();
+                if (any != null) { var drv = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(any.AvdHome))); p.Add("ổ " + drv.Name.TrimEnd('\\') + " trống " + (drv.AvailableFreeSpace / 1073741824.0).ToString("0") + " GB"); }
+            }
+            catch { }
+            try
+            {
+                foreach (var e in all.Where(x => x.Running))
+                {
+                    var s = St(e);
+                    p.Add((Multi ? e.Label + " " : "") + "chạy " + Dur(DateTime.Now - e.StartedAt) + (s.Frozen ? " (đứng hình)" : ""));
+                }
+            }
+            catch { }
+            try { int n = MacroRunner.UserCount; if (n > 0) p.Add(n + " macro đang chạy"); } catch { }
+            return string.Join(" · ", p);
+        }
+
+        // % CPU toàn máy, đo trong 500ms (chạy ở luồng nền)
+        static int CpuPct()
+        {
+            long i1, k1, u1, i2, k2, u2;
+            if (!GetSystemTimes(out i1, out k1, out u1)) return -1;
+            Thread.Sleep(500);
+            if (!GetSystemTimes(out i2, out k2, out u2)) return -1;
+            long idle = i2 - i1, total = (k2 - k1) + (u2 - u1); // kernel đã gồm idle
+            return total <= 0 ? -1 : (int)Math.Round(100.0 * (total - idle) / total);
+        }
+        [DllImport("kernel32.dll")] static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+
         void CheckHost()
         {
             var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX)) };
@@ -310,6 +432,7 @@ namespace DsoftEmu // Không gian tên chung của app
         {
             var s = St(e);
             Reset(s.Console); Reset(s.DroidNet);
+            s.Fp = null; s.Frozen = false;
             if (!unexpected || !Enabled || !Alerts) return;
             bool restart = code != 0 && S.GetBool("AutoRestart", true);
             s.Crashed = code != 0;

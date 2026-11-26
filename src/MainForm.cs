@@ -72,7 +72,8 @@ namespace DsoftEmu
         Button bNet, bSave, bRestart, bLoad, bAdb, bShot, bMax, bMini, bDisp, bFilter;  // Nút thao tác nhanh ở thanh bên
         Watchdog watch;  // Giám sát bất thường + gửi Discord
         TextBox tHook, tHookName, tRetry;  // Webhook Discord, tên máy hiện trong tin nhắn, lịch thử lại (phút)
-        NumericUpDown nWatchSec, nShotMin, nScanSec;  // Chu kỳ kiểm tra (giây), chu kỳ chụp ảnh (phút), chu kỳ quét gửi (giây)
+        NumericUpDown nWatchSec, nShotMin, nScanSec, nFreeze;  // + đứng hình bao lâu thì báo
+        CheckBox kShotStats;  // Ảnh định kỳ kèm dòng tài nguyên  // Chu kỳ kiểm tra (giây), chu kỳ chụp ảnh (phút), chu kỳ quét gửi (giây)
         CheckBox kAlerts, kAlertShot;  // Gửi cảnh báo, kèm ảnh trong cảnh báo
         bool syncingMap;  // Đang đồng bộ ô tick map phím từ code (không hỏi bật ADB)
         // App được dùng ADB ngay lúc này: người dùng cho phép và ADB trong Android chưa bị tắt
@@ -131,6 +132,7 @@ namespace DsoftEmu
             for (int i = 0; i < count; i++) AddMachine();  // Tạo bộ điều khiển cho từng máy
             mapper = new KeyMapper(touch);  // Tạo bộ map phím dùng dịch vụ chạm
             mapper.ToggleMacro = ToggleMacro;  // Phím tắt macro trong keymap sẽ gọi ToggleMacro
+            mapper.ToggleHud = () => UI(ToggleHud);  // Lệnh "hud <Phím>": ẩn/hiện tên phím trên giả lập
 
             Text = "Dsoft Android Emulator";  // Tiêu đề cửa sổ
             if (Program.AppIcon != null) Icon = Program.AppIcon;  // Dùng icon ứng dụng nếu có
@@ -205,6 +207,13 @@ namespace DsoftEmu
             bMax = SideBtn(side, "⛶  Phóng to cửa sổ", (s, e) => ToggleEmuMax(), "Phóng cửa sổ giả lập của máy đang chọn vừa màn hình (giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
             bMini = SideBtn(side, "▭  Thu nhỏ cửa sổ", (s, e) => ToggleEmuMini(), "Thu cửa sổ giả lập của máy đang chọn về cỡ nhỏ (cạnh dài 360px, giữ tỉ lệ). Bấm lại để trả kích thước cũ.");
             bShot = SideBtn(side, "▣  Chụp gửi Discord", (s, e) => ShotToDiscord(), "Chụp màn hình Android và gửi qua webhook Discord (không cần ADB). Cấu hình ở trang Cấu hình.");
+            // 4 nút hay dùng: chữ đậm + màu riêng cho nổi (lớp phủ đổi màu theo bật/tắt trong RefreshSide)
+            var fHot = new Font("Segoe UI Semibold", 9.75f);
+            foreach (var b in new[] { bFilter, bMax, bMini, bShot }) b.Font = fHot;
+            bFilter.ForeColor = CFilterOff;
+            bMax.ForeColor = Color.FromArgb(110, 200, 255);   // xanh dương sáng
+            bMini.ForeColor = Color.FromArgb(120, 225, 160);  // xanh lá sáng
+            bShot.ForeColor = Color.FromArgb(170, 180, 255);  // tím Discord sáng
             bNet = SideBtn(side, "⇄  Làm mới mạng", (s, e) => RefreshNet(), "Tắt/bật lại Wi-Fi ảo trong Android (~15s). Dùng khi mạng chậm/mất.");
             bSave = SideBtn(side, "⬇  Lưu trạng thái", (s, e) => SaveState(), "Lưu trạng thái hiện tại (Android đứng hình ~10-20s).");
             bLoad = SideBtn(side, "↺  Chạy từ bản lưu", (s, e) => RestartEmu(true), "Tắt rồi bật lại đúng trạng thái đã lưu.");
@@ -214,6 +223,7 @@ namespace DsoftEmu
             return side;  // Trả về thanh bên
         }
 
+        static readonly Color CFilterOff = Color.FromArgb(255, 225, 120);  // Chữ nút lớp phủ tối khi đang tắt
         readonly ToolTip tips = new ToolTip();  // Chú thích khi rê chuột lên nút thanh bên
 
         // Tạo nút nhỏ kiểu tối cho thanh bên
@@ -875,7 +885,7 @@ namespace DsoftEmu
             bMax.Enabled = bMini.Enabled = emu.Running;  // Phóng to / thu nhỏ: cần cửa sổ giả lập
             bool flt = ScreenFilter.IsOn(emu.Port);
             bFilter.Text = "◑  Lớp phủ tối: " + (flt ? "Bật" : "Tắt");
-            bFilter.ForeColor = flt ? Color.FromArgb(240, 170, 80) : Color.FromArgb(220, 224, 232);
+            bFilter.ForeColor = flt ? Color.FromArgb(255, 175, 70) : CFilterOff;  // Bật: cam, tắt: vàng nhạt
             bDisp.Enabled = uiOp == 0 && !busy;
             bDisp.Text = "◐  Hiển thị: " + EmulatorController.DisplayName(emu.Display);
             if (cDisp != null && (dispOf != emu || dispSeen != emu.Display))  // Đổi máy / đổi hồ sơ (vd từ nút thanh bên) -> ô chọn theo máy đó
@@ -1373,7 +1383,72 @@ namespace DsoftEmu
             // Ghép các thẻ thành trang cuộn
             return Stack(Card(null, bar), Card("Nơi lưu dữ liệu (image + máy ảo)", store), Card("Phần cứng máy ảo", grid),
                          Card("Hiển thị (độ phân giải)", BuildDisplay()), Card("Tuỳ chọn", opts),
-                         Card("Discord và giám sát (không cần ADB)", BuildDiscord()));
+                         Card("Discord và giám sát (không cần ADB)", BuildDiscord()), Card("Sao lưu / khôi phục cấu hình", BuildBackup()));
+        }
+
+        // Thẻ sao lưu/khôi phục: settings.ini + keymaps + macros trong 1 file zip
+        Control BuildBackup()
+        {
+            var box = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+            var bar = Row();
+            Btn(bar, "⬇ Sao lưu ra file zip...", (s, e) => BackupConfig(), CBlue);
+            Btn(bar, "⬆ Khôi phục từ file zip...", (s, e) => RestoreConfig());
+            Btn(bar, "Mở thư mục bản tự lưu", (s, e) => { var d = Path.Combine(baseDir, "backups"); Directory.CreateDirectory(d); Process.Start("explorer.exe", "\"" + d + "\""); });
+            box.Controls.Add(bar);
+            box.Controls.Add(new Label
+            {
+                AutoSize = true, ForeColor = CMuted, Margin = new Padding(0, 6, 0, 0),
+                Text = "Gồm settings.ini (cấu hình, Discord, giám sát) + toàn bộ keymaps và macros. Dùng để chuyển sang máy khác.\r\n" +
+                       "Khôi phục: tự lưu bản hiện tại vào thư mục backups trước; mặc định giữ nguyên thư mục SDK / máy ảo / cổng của máy này."
+            });
+            return box;
+        }
+
+        void BackupConfig()
+        {
+            try
+            {
+                bool hook = S.Get("DiscordWebhook", "").Trim().Length > 0 &&
+                    MessageBox.Show(this, "Kèm Discord webhook trong file sao lưu?\r\n\r\nAi có file này sẽ gửi được tin vào kênh Discord của bạn.", "Sao lưu",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+                using (var dlg = new SaveFileDialog { Filter = "File zip|*.zip", FileName = "DsoftEmu-cauhinh-" + DateTime.Now.ToString("yyyyMMdd-HHmm") + ".zip" })
+                {
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    int n = ConfigBackup.Create(dlg.FileName, baseDir, S, hook);
+                    Log.I("✔ Đã sao lưu " + n + " file" + (hook ? " (kèm webhook)" : " (không kèm webhook)") + ": " + dlg.FileName);
+                }
+            }
+            catch (Exception ex) { Log.I("✖ Sao lưu lỗi: " + ex.Message); }
+        }
+
+        void RestoreConfig()
+        {
+            try
+            {
+                string zip;
+                using (var dlg = new OpenFileDialog { Filter = "File zip|*.zip" })
+                {
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    zip = dlg.FileName;
+                }
+                var keep = MessageBox.Show(this, "Khôi phục cấu hình từ:\r\n" + zip + "\r\n\r\nKeymap/macro trùng tên sẽ bị ghi đè (bản hiện tại được tự lưu vào thư mục backups).\r\n\r\n" +
+                    "Giữ nguyên thư mục SDK / máy ảo / cổng / bản Android của máy NÀY?\r\n  Có = nên chọn khi chuyển sang máy khác\r\n  Không = lấy y nguyên từ file", "Khôi phục",
+                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                if (keep == DialogResult.Cancel) return;
+                // Tự sao lưu bản hiện tại (kèm webhook, chỉ nằm trên máy này)
+                string bdir = Path.Combine(baseDir, "backups"); Directory.CreateDirectory(bdir);
+                string auto = Path.Combine(bdir, "truoc-khoi-phuc-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip");
+                ConfigBackup.Create(auto, baseDir, S, true);
+                string r = ConfigBackup.Restore(zip, baseDir, S, keep == DialogResult.Yes);
+                Log.I("✔ Đã khôi phục: " + r + ". Bản cũ: " + auto);
+                if (File.Exists(KeymapPath)) { keyEdit.Text = Crlf(File.ReadAllText(KeymapPath)); ApplyKeymap(false); }
+                RefreshMacroList();
+                if (MessageBox.Show(this, "Đã khôi phục: " + r + ".\r\n\r\nMở lại app ngay để mọi ô cấu hình hiện đúng giá trị mới?\r\n" +
+                        "(Nếu để sau: đừng bấm \"Lưu cấu hình\" trước khi mở lại, kẻo ghi đè bằng giá trị cũ đang hiện trên màn hình.)",
+                        "Khôi phục", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    Application.Restart();
+            }
+            catch (Exception ex) { Log.I("✖ Khôi phục lỗi: " + ex.Message); }
         }
 
         // Thẻ hồ sơ hiển thị: 3 bộ giá trị (Mặc định / Treo máy / Tuỳ chỉnh) + chọn hồ sơ cho máy đang chọn
@@ -1452,10 +1527,12 @@ namespace DsoftEmu
             nShotMin = (NumericUpDown)row("Chụp ảnh mỗi (phút)", "0 = tắt", Num(0, 1440, S.GetInt("ShotMin", 30), 5));
             nScanSec = (NumericUpDown)row("Quét gửi mỗi (giây)", "Ảnh chờ trong RAM, luồng nền gửi theo chu kỳ này", Num(2, 300, S.GetInt("SendScanSec", 10), 1));
             tRetry = (TextBox)row("Thử lại sau (phút)", "Lỗi thì thử lại lần lượt, hết thì bỏ tin", new TextBox { Width = 120, Text = S.Get("RetryMins", "1,3,5") });
+            nFreeze = (NumericUpDown)row("Báo đứng hình sau (phút)", "So ảnh chụp mỗi ≥ 60 giây, màn hình không đổi đủ lâu thì báo kèm ảnh. 0 = tắt", Num(0, 720, S.GetInt("FreezeMin", 10), 5));
 
             var opts = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true };
             kAlerts = Chk(opts, "Gửi cảnh báo khi có bất thường (mất mạng, treo, crash, RAM/ổ đĩa sắp hết) và khi hồi phục", S.GetBool("WatchAlerts", true));
             kAlertShot = Chk(opts, "Kèm ảnh màn hình trong cảnh báo", S.GetBool("WatchAlertShot", true));
+            kShotStats = Chk(opts, "Ảnh định kỳ kèm 1 dòng tài nguyên (CPU, RAM, giả lập dùng bao nhiêu, ổ trống, thời gian chạy, macro)", S.GetBool("ShotStats", true));
 
             var bar = Row();
             Btn(bar, "Lưu và áp dụng", (s, e) =>
@@ -1510,6 +1587,8 @@ namespace DsoftEmu
             tRetry.Text = string.Join(",", mins);
             S.Set("WatchAlerts", kAlerts.Checked);
             S.Set("WatchAlertShot", kAlertShot.Checked);
+            S.Set("ShotStats", kShotStats.Checked);
+            S.Set("FreezeMin", (int)nFreeze.Value);
             S.Save();
             return true;
         }
@@ -1639,8 +1718,9 @@ namespace DsoftEmu
             };
             Btn(bar, "Lưu && áp dụng  (Ctrl+S)", (s, e) => ApplyKeymap(true), CBlue);  // "&&" hiển thị thành "&" trên nút
             Btn(bar, "Lấy toạ độ từ màn hình...", (s, e) => Pick(keyEdit));  // Nút lấy toạ độ từ ảnh chụp màn hình
-            Btn(bar, "◎ Xem phím trên màn hình", (s, e) => ShowKeyView());  // Ảnh màn hình + vòng tròn vị trí bấm kèm tên phím
-            keyEdit.TextChanged += (s, e) => { if (keyView != null) keyView.Redraw(); };
+            Btn(bar, "◎ Sửa phím trên ảnh", (s, e) => ShowKeyView());  // Ảnh màn hình + vòng tròn: kéo để dời, click/kéo để thêm phím
+            bHud = Btn(bar, "◉ Tên phím trên giả lập: Tắt", (s, e) => ToggleHud());  // Lớp tên phím đè lên cửa sổ giả lập
+            keyEdit.TextChanged += (s, e) => { if (keyView != null) keyView.Redraw(); KeyHud.RefreshAll(); };
             // Nút Mẫu: chèn đoạn keymap mẫu (kèm combo/repeat) vào vị trí con trỏ
             TemplateBtn(bar, Templates.Keymap.Select(t => new KeyValuePair<string, Action>(t[0], () =>
             {
@@ -1683,12 +1763,25 @@ namespace DsoftEmu
         }
 
         // Xem map phím: ảnh màn hình + vòng tròn/tên phím theo nội dung ô soạn (sửa là vẽ lại ngay)
-        PickerForm keyView;
+        KeyViewForm keyView;
         void ShowKeyView()
         {
             if (keyView != null && !keyView.IsDisposed) { keyView.Activate(); return; }
-            keyView = new PickerForm(Grabber(), t => UI(() => { keyEdit.SelectedText = t; keyEdit.Focus(); }), () => KeyMapper.Marks(keyEdit.Text));
+            // Sửa trên ảnh = ghi thẳng vào ô soạn rồi lưu + áp dụng luôn
+            keyView = new KeyViewForm(Grabber(), () => keyEdit.Text, t => { keyEdit.Text = t; ApplyKeymap(true); });
             keyView.Show(this);
+        }
+
+        Button bHud;  // Nút ẩn/hiện tên phím trên giả lập
+
+        // Ẩn/hiện tên phím trên cửa sổ giả lập của máy đang chọn
+        void ToggleHud()
+        {
+            int port = emu.Port;
+            if (!KeyHud.IsOn(port) && !emu.Running) { Log.I("Giả lập chưa chạy - chưa hiện tên phím được."); return; }
+            bool on = KeyHud.Toggle(port, () => Watchdog.FindEmuWindow(port), () => KeyMapper.Marks(keyEdit.Text));
+            if (bHud != null) bHud.Text = "◉ Tên phím trên giả lập: " + (on ? "Bật" : "Tắt");
+            Log.I("Tên phím trên giả lập: " + (on ? "BẬT (chuột/phím vẫn bấm xuyên qua)" : "TẮT"));
         }
 
         // Hàm chụp màn hình máy đang chọn: ADB trước, lỗi thì console emulator
@@ -1729,6 +1822,7 @@ namespace DsoftEmu
             Btn(bar, "Mới", (s, e) => NewMacro());  // Nút tạo macro mới
             Btn(bar, "Lưu (Ctrl+S)", (s, e) => SaveMacro(), CBlue);  // Nút lưu macro
             Btn(bar, "Lấy toạ độ...", (s, e) => Pick(macroEdit));  // Nút lấy toạ độ
+            bRec = Btn(bar, "⏺ Ghi macro", (s, e) => { if (rec == null) StartRecord(); else StopRecord(true); }, CRed);  // Ghi thao tác chuột trên giả lập
             // Nút Mẫu: tạo file macro mới từ mẫu (trùng tên thì thêm số)
             TemplateBtn(bar, Templates.Macros.Select(t => new KeyValuePair<string, Action>(t[1], () =>
             {
@@ -1806,6 +1900,38 @@ namespace DsoftEmu
             var errs = new List<string>();  // Danh sách lỗi cú pháp
             Macro.Parse(n, macroEdit.Text, errs);  // Phân tích để tìm lỗi
             Log.I("Đã lưu macro '" + n + "'" + (errs.Count > 0 ? " - " + string.Join("; ", errs) : ""));  // Báo đã lưu kèm lỗi (nếu có)
+        }
+
+        MacroRecorder rec;  // Đang ghi macro (null = không)
+        Button bRec;
+
+        // Bắt đầu ghi chuột trái trên cửa sổ giả lập của máy đang chọn
+        void StartRecord()
+        {
+            int port = emu.Port;
+            if (!emu.Running || Watchdog.FindEmuWindow(port) == IntPtr.Zero) { Log.I("Giả lập chưa chạy / không thấy cửa sổ - chưa ghi được."); return; }
+            rec = new MacroRecorder(() => Watchdog.FindEmuWindow(port));
+            rec.Changed += () => BeginInvoke((Action)(() => { if (rec != null) bRec.Text = "⏹ Dừng ghi (" + rec.Count + " thao tác)"; }));
+            if (!rec.Start()) { Log.I("✖ Không cài được hook chuột để ghi macro."); rec = null; return; }
+            bRec.Text = "⏹ Dừng ghi (0 thao tác)";
+            Log.I("⏺ Đang ghi: click / giữ / vuốt bằng chuột trái trên cửa sổ giả lập. Xong bấm ⏹ Dừng ghi.");
+        }
+
+        // Dừng ghi; save = tạo file macro mới từ thao tác đã ghi
+        void StopRecord(bool save)
+        {
+            var r = rec; rec = null;
+            if (r == null) return;
+            r.Dispose();
+            if (bRec != null && !bRec.IsDisposed) bRec.Text = "⏺ Ghi macro";
+            if (!save) return;
+            if (r.Count == 0) { Log.I("Không ghi được thao tác nào (chỉ ghi chuột trái trong vùng màn hình giả lập)."); return; }
+            Directory.CreateDirectory(MacroDir);
+            string name = "ghi_" + DateTime.Now.ToString("HHmmss");
+            File.WriteAllText(Path.Combine(MacroDir, name + ".txt"), Crlf(r.Build()));
+            RefreshMacroList();
+            macroList.SelectedItem = name;
+            Log.I("✔ Đã ghi " + r.Count + " thao tác vào macro '" + name + "' (loop 1 - sửa loop 0 để lặp mãi).");
         }
 
         /// <summary>Bật/tắt macro theo tên (gọi từ nút hoặc phím tắt trong keymap).</summary>
@@ -1999,6 +2125,8 @@ namespace DsoftEmu
             }
             timer.Stop();  // Dừng timer
             ScreenFilter.Off(-1);  // Gỡ mọi lớp phủ
+            KeyHud.Off(-1);  // Gỡ lớp tên phím
+            StopRecord(false);  // Đang ghi macro thì gỡ hook chuột
             watch.Stop();  // Dừng giám sát
             MacroRunner.StopAll();  // Dừng tất cả macro
             mapper.Dispose();  // Gỡ hook bàn phím

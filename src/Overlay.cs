@@ -25,6 +25,13 @@ namespace DsoftEmu
 
         public static bool IsOn(int port) { return on.ContainsKey(port); }
 
+        /// <summary>h có phải cửa sổ lớp phủ tối của app không (để lớp tên phím nằm trên nó, không giành chỗ).</summary>
+        public static bool IsFilterWindow(IntPtr h)
+        {
+            foreach (var f in on.Values) if (f.IsHandleCreated && f.Handle == h) return true;
+            return false;
+        }
+
         /// <summary>Bật/tắt lớp phủ cho máy có cổng port. dimPct 0..90, gray = đen trắng. Trả về trạng thái sau khi bấm.</summary>
         public static bool Toggle(int port, Func<IntPtr> target, int dimPct, bool gray)
         {
