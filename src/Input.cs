@@ -31,6 +31,16 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         // Gỡ adb: thread poll vẫn chạy nhưng không gọi adb nữa (dùng khi tắt ADB)
         public void Detach() { adb = null; }
 
+        public bool Attached { get { return adb != null; } } // Đang đọc kích thước qua adb
+
+        /// <summary>Không có adb: lấy kích thước từ cấu hình máy ảo (hướng gốc) + hướng xoay cho trước (0..3).</summary>
+        public void SetNative(int w, int h, int rot)
+        {
+            rot &= 3;
+            if (rot % 2 == 1) { int t = w; w = h; h = t; }
+            W = w; H = h; Rot = rot;
+        }
+
         // Đọc kích thước và hướng xoay màn hình qua adb shell, cập nhật W/H/Rot
         public void Refresh()
         {
@@ -225,6 +235,180 @@ namespace DsoftEmu // Không gian tên chung của ứng dụng
         }
 
         public void Dispose() { try { sh.Kill(); } catch { } } // Diệt phiên adb shell
+    }
+
+    /// <summary>Kết nối console của emulator (telnet 127.0.0.1:cổng) + xác thực bằng auth token. Không cần ADB trong Android.</summary>
+    public static class EmuConsoleConn
+    {
+        /// <summary>Mở kết nối, đọc banner, gửi "auth" nếu emulator yêu cầu. Trả null nếu lỗi.</summary>
+        public static TcpClient Open(int port, out StreamReader r, out StreamWriter w)
+        {
+            r = null; w = null;
+            var c = new TcpClient { NoDelay = true };
+            try
+            {
+                c.Connect("127.0.0.1", port);
+                var s = c.GetStream(); s.ReadTimeout = 5000;
+                r = new StreamReader(s, System.Text.Encoding.ASCII);
+                w = new StreamWriter(s, System.Text.Encoding.ASCII) { NewLine = "\r\n", AutoFlush = true };
+                var banner = new System.Text.StringBuilder();
+                string l;
+                while ((l = r.ReadLine()) != null) { banner.AppendLine(l); if (l.StartsWith("OK")) break; }
+                // Banner dạng: "you can find your <auth_token> in \n'C:\Users\x\.emulator_console_auth_token'"
+                var m = Regex.Match(banner.ToString(), @"'([^']*auth_token)'");
+                if (m.Success)
+                {
+                    string tok = File.Exists(m.Groups[1].Value) ? File.ReadAllText(m.Groups[1].Value).Trim() : "";
+                    w.WriteLine("auth " + tok);
+                    string a = ReadReply(r);
+                    if (!IsOk(a)) { Log.I("Console emulator: xác thực lỗi (" + a.Trim() + ")"); c.Close(); return null; }
+                }
+                s.ReadTimeout = Timeout.Infinite;
+                return c;
+            }
+            catch (Exception ex) { Log.I("Console emulator cổng " + port + ": " + ex.Message); try { c.Close(); } catch { } return null; }
+        }
+
+        /// <summary>Khối trả lời kết thúc bằng dòng OK (trước đó có thể có dòng thông tin).</summary>
+        public static bool IsOk(string rep)
+        {
+            var ls = rep.Trim().Split('\n');
+            return ls[ls.Length - 1].Trim().StartsWith("OK");
+        }
+
+        /// <summary>Đọc tới dòng OK/KO, trả cả khối.</summary>
+        public static string ReadReply(StreamReader r)
+        {
+            var sb = new System.Text.StringBuilder(); string l;
+            while ((l = r.ReadLine()) != null) { sb.AppendLine(l); if (l.StartsWith("OK") || l.StartsWith("KO")) break; }
+            return sb.ToString();
+        }
+
+        /// <summary>Chụp màn hình qua console (ảnh theo hướng GỐC của màn hình ảo, không cần ADB).</summary>
+        public static byte[] Screenshot(int port)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "dsoftemu_shot_" + port);
+            Directory.CreateDirectory(dir);
+            foreach (var f in Directory.GetFiles(dir, "*.png")) try { File.Delete(f); } catch { }
+            StreamReader r; StreamWriter w;
+            using (var c = Open(port, out r, out w))
+            {
+                if (c == null) throw new Exception("Không kết nối được console emulator (cổng " + port + ").");
+                c.GetStream().ReadTimeout = 15000;
+                w.WriteLine("screenrecord screenshot " + dir);
+                string rep = ReadReply(r);
+                if (!IsOk(rep)) throw new Exception("Chụp qua console lỗi: " + rep.Trim());
+            }
+            for (int i = 0; i < 30; i++) // File có thể ghi xong trễ một chút
+            {
+                var fs = Directory.GetFiles(dir, "*.png");
+                if (fs.Length > 0) { try { var b = File.ReadAllBytes(fs[0]); File.Delete(fs[0]); return b; } catch (IOException) { } }
+                Thread.Sleep(100);
+            }
+            throw new Exception("Không thấy ảnh chụp trong " + dir);
+        }
+    }
+
+    /// <summary>Bơm cảm ứng đa điểm qua console emulator ("event send" vào màn cảm ứng virtio, toạ độ 0..32767).
+    /// Không cần ADB / USB debugging trong Android -> game không thấy. Toạ độ cảm ứng theo hướng GỐC của màn hình ảo,
+    /// nên phải đổi theo hướng xoay hiện tại (Screen.Rot).</summary>
+    public class ConsoleTouch : ITouch
+    {
+        const int MaxV = 32767; // Dải ABS_MT_POSITION của virtio_input_multi_touch
+        readonly int port;
+        readonly Screen scr;
+        readonly object lk = new object();
+        readonly Dictionary<long, int> slots = new Dictionary<long, int>(); // pointer id -> slot 0..9
+        TcpClient tcp; StreamReader rd; StreamWriter wr;
+        volatile bool alive;
+        int trk = 100; // Tracking id tăng dần
+        bool koLogged;
+
+        public ConsoleTouch(int port, Screen scr) { this.port = port; this.scr = scr; }
+        public bool Alive { get { return alive; } }
+        public string Name { get { return "console emulator (đa điểm, không cần ADB)"; } }
+
+        public bool Start()
+        {
+            tcp = EmuConsoleConn.Open(port, out rd, out wr);
+            if (tcp == null) return false;
+            alive = true;
+            new Thread(Drain) { IsBackground = true }.Start();
+            Log.I("✔ Input: " + Name + (scr.Rot != 0 ? " · xoay " + scr.Rot * 90 + "°" : ""));
+            return true;
+        }
+
+        // Đọc bỏ các dòng "OK" trả về; báo lỗi KO một lần; phát hiện mất kết nối
+        void Drain()
+        {
+            try
+            {
+                string l;
+                while ((l = rd.ReadLine()) != null)
+                    if (l.StartsWith("KO") && !koLogged) { koLogged = true; Log.I("⚠ Console emulator từ chối lệnh chạm: " + l); }
+            }
+            catch { }
+            if (alive) Log.I("⚠ Mất kết nối console emulator (cổng " + port + ")");
+            alive = false;
+        }
+
+        public void Send(int action, long id, double nx, double ny)
+        {
+            if (!alive) return;
+            // Toạ độ màn hình (đã xoay) -> toạ độ tấm cảm ứng (hướng gốc)
+            double px, py;
+            switch (scr.Rot & 3)
+            {
+                case 1: px = 1 - ny; py = nx; break;
+                case 2: px = 1 - nx; py = 1 - ny; break;
+                case 3: px = ny; py = 1 - nx; break;
+                default: px = nx; py = ny; break;
+            }
+            int x = Math.Max(0, Math.Min(MaxV, (int)Math.Round(px * MaxV)));
+            int y = Math.Max(0, Math.Min(MaxV, (int)Math.Round(py * MaxV)));
+            string cmd;
+            lock (lk)
+            {
+                int slot;
+                if (action == 0)
+                {
+                    if (!slots.TryGetValue(id, out slot))
+                    {
+                        slot = -1;
+                        for (int s = 0; s < 10; s++) if (!slots.ContainsValue(s)) { slot = s; break; }
+                        if (slot < 0) return; // Hết 10 ngón
+                        slots[id] = slot;
+                    }
+                    if (++trk > 60000) trk = 100;
+                    cmd = "event send EV_ABS:ABS_MT_SLOT:" + slot + " EV_ABS:ABS_MT_TRACKING_ID:" + trk +
+                          " EV_ABS:ABS_MT_POSITION_X:" + x + " EV_ABS:ABS_MT_POSITION_Y:" + y + " EV_ABS:ABS_MT_PRESSURE:100 EV_SYN:0:0";
+                }
+                else
+                {
+                    if (!slots.TryGetValue(id, out slot)) return; // Không có down tương ứng
+                    if (action == 1)
+                    {
+                        slots.Remove(id);
+                        cmd = "event send EV_ABS:ABS_MT_SLOT:" + slot + " EV_ABS:ABS_MT_TRACKING_ID:-1 EV_SYN:0:0";
+                    }
+                    else cmd = "event send EV_ABS:ABS_MT_SLOT:" + slot + " EV_ABS:ABS_MT_POSITION_X:" + x + " EV_ABS:ABS_MT_POSITION_Y:" + y + " EV_SYN:0:0";
+                }
+                try { wr.WriteLine(cmd); } catch { alive = false; }
+            }
+        }
+
+        public void Dispose()
+        {
+            if (!alive && tcp == null) return;
+            lock (lk)
+            {
+                // Nhả mọi ngón đang giữ để Android không bị kẹt chạm
+                foreach (var s in slots.Values) try { wr.WriteLine("event send EV_ABS:ABS_MT_SLOT:" + s + " EV_ABS:ABS_MT_TRACKING_ID:-1 EV_SYN:0:0"); } catch { }
+                slots.Clear();
+                alive = false;
+                try { tcp.Close(); } catch { }
+            }
+        }
     }
 
     /// <summary>Ngẫu nhiên hoá kiểu người thật: lệch vị trí theo Gauss, thời gian nhấn log-normal, độ trễ tam giác.</summary>

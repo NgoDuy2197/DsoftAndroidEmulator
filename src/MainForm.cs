@@ -241,7 +241,7 @@ namespace DsoftEmu
             EmulatorController.Count = emus.Count;
             EmulatorController.SetAll(emus);
             // Android boot xong -> đánh dấu sẵn sàng; chỉ kết nối input khi đó là máy đang chọn và được dùng ADB
-            e.Booted += () => { e.Ready = true; if (e == emu && AdbReady) Task.Run(() => ConnectInput()); UI(RefreshAll); };
+            e.Booted += () => { e.Ready = true; if (e == emu) Task.Run(() => ConnectInput()); UI(RefreshAll); };
             e.Stopped += () => { e.Ready = false; UI(RefreshAll); };  // Máy tắt -> xoá cờ sẵn sàng
             watch.Attach(e);
             return e;
@@ -318,7 +318,7 @@ namespace DsoftEmu
                     if (i != null) i.Dispose();
                     touch.Scr.Detach();
                 }
-                if (e == emu && e.Ready && e.AdbOn && !e.AdbKilled) ConnectInput();  // Máy mới có ADB -> nối input
+                if (e == emu && e.Ready) ConnectInput();  // Nối input máy mới (scrcpy nếu có ADB, không thì console)
                 UI(RefreshAll);
             });
             RefreshAll();
@@ -834,17 +834,10 @@ namespace DsoftEmu
             sideStatus.ForeColor = c == Color.FromArgb(140, 145, 155) ? Color.Gray : c;  // Màu xám thì dùng Gray cho dễ nhìn trên nền tối
 
             var inj = touch.Inj;  // Bộ gửi chạm hiện tại
-            // ADB đang tắt: map phím / auto click không dùng được
-            if (!AdbReady)
-            {
-                SetCheck("input", St.Warn, "ADB đang tắt (game không thấy USB debugging). Map phím / auto click cần ADB.", "Bật ADB", ToggleAdb);
-                inputLbl.Text = "Input: ADB đang tắt";  // Nhãn trên trang Map phím
-                inputLbl.ForeColor = COrange;  // Màu cam
-            }
             // Đã kết nối input
-            else if (touch.Ready)
+            if (touch.Ready)
             {
-                bool fast = inj is ScrcpyTouch;  // Kiểu scrcpy là kiểu nhanh
+                bool fast = inj is ScrcpyTouch || inj is ConsoleTouch;  // scrcpy / console là kiểu nhanh
                 SetCheck("input", fast ? St.Ok : St.Warn, inj.Name, "Kết nối lại", () => Task.Run(() => ConnectInput()));  // Mục input: scrcpy đạt, adb cảnh báo; có nút kết nối lại
                 inputLbl.Text = "Input: " + inj.Name;  // Hiện tên kiểu input trên trang Map phím
                 inputLbl.ForeColor = fast ? CGreen : COrange;  // Xanh nếu nhanh, cam nếu chậm
@@ -864,9 +857,9 @@ namespace DsoftEmu
         {
             // Phím toggle trong keymap đổi mapper.Enabled ở luồng hook -> đồng bộ lại ô tick trên trang Map phím
             if (kMap.Checked != mapper.Enabled) { syncingMap = true; kMap.Checked = mapper.Enabled; syncingMap = false; }
-            bool adbOk = AdbReady;  // Được dùng ADB không
-            mapLbl.Text = "Map phím: " + (mapper.Enabled ? (adbOk ? "BẬT" : "BẬT · cần ADB") : "TẮT");  // Chữ trạng thái map phím
-            mapLbl.ForeColor = !mapper.Enabled ? Color.Gray : adbOk ? Color.FromArgb(80, 200, 120) : Color.FromArgb(240, 170, 80);  // Xanh / cam (thiếu ADB) / xám
+            bool inOk = touch.Ready;  // Đã có kênh gửi chạm
+            mapLbl.Text = "Map phím: " + (mapper.Enabled ? (inOk ? "BẬT" : "BẬT · chờ input") : "TẮT");  // Chữ trạng thái map phím
+            mapLbl.ForeColor = !mapper.Enabled ? Color.Gray : inOk ? Color.FromArgb(80, 200, 120) : Color.FromArgb(240, 170, 80);  // Xanh / cam (chưa có input) / xám
 
             // Nút ADB: tắt = xanh (an toàn với game), bật = cam (game có thể phát hiện)
             bAdb.Text = !emu.AdbOn ? "●  ADB: TẮT  (bấm để bật)" : emu.AdbKilled && (emu.Running || androidReady) ? "●  ADB: BẬT  (chờ cold boot)" : "●  ADB: BẬT  (bấm để tắt)";
@@ -894,7 +887,7 @@ namespace DsoftEmu
 
             bool show = S.GetBool("ShowStats", true) && ready;  // Có hiện số liệu không
             statsLbl.Visible = show;  // Ẩn khi tắt tuỳ chọn hoặc chưa sẵn sàng
-            if (show && !adbOk) { statsLbl.Text = "Mạng / FPS: cần ADB"; statsLbl.ForeColor = Color.Gray; return; }  // ADB tắt: không đọc được số liệu
+            if (show && !AdbReady) { statsLbl.Text = "Mạng / FPS: cần ADB"; statsLbl.ForeColor = Color.Gray; return; }  // ADB tắt: không đọc được số liệu
             if (!show || busy || polling || (DateTime.Now - lastPoll).TotalSeconds < 2) return;  // Mỗi 2 giây đọc 1 lần, không chạy chồng
             polling = true;  // Đánh dấu đang đọc
             lastPoll = DateTime.Now;  // Ghi mốc
@@ -949,7 +942,7 @@ namespace DsoftEmu
         void ToggleAdb()
         {
             if (emu.AdbOn) { DisableAdb(); return; }  // Đang bật -> tắt
-            RequireAdb("Map phím, auto click, số liệu mạng/FPS, cài APK");  // Đang tắt -> hỏi rồi bật
+            RequireAdb("Số liệu mạng/FPS, cài APK, làm mới mạng (map phím / auto click KHÔNG cần ADB)");  // Đang tắt -> hỏi rồi bật
         }
 
         // Cho phép dùng ADB; ADB đã bị tắt trong Android đang chạy thì cold boot để bật lại
@@ -960,7 +953,7 @@ namespace DsoftEmu
             Log.I("Đã cho phép dùng ADB" + (emus.Count > 1 ? " trên " + e.Label : "") + ".");  // Ghi log
             if (!e.AdbKilled)  // ADB trong Android vẫn còn chạy
             {
-                if (e.Ready && !touch.Ready) Task.Run(() => ConnectInput());  // Kết nối input ngay
+                if (e.Ready && !(touch.Inj is ScrcpyTouch)) Task.Run(() => ConnectInput());  // Chuyển sang scrcpy (nhanh hơn console) nếu được
                 RefreshAll();  // Làm mới giao diện
                 return;
             }
@@ -997,6 +990,7 @@ namespace DsoftEmu
                 }
                 if (alive) e.KillAdb();  // Tắt adbd trong Android
                 e.ReleaseAdbIfIdle();  // Không máy nào cần ADB nữa -> tắt adb server riêng
+                if (e == emu && e.Ready) ConnectInput();  // Chuyển sang console emulator (map phím / auto click vẫn chạy)
             });
         }
 
@@ -1335,6 +1329,21 @@ namespace DsoftEmu
             nPr.ValueChanged += (s, e) => { S.Set("PeriodicRestartHours", (int)nPr.Value); S.Save(); };
             prRow.Controls.Add(nPr);
             opts.Controls.Add(prRow);
+            // Kiểu điều khiển (map phím / auto click): áp dụng ngay, nối lại input
+            var inRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            inRow.Controls.Add(new Label { AutoSize = true, Text = "Điều khiển (map phím / auto click) qua", Margin = new Padding(3, 6, 6, 0) });
+            var cIn = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, Font = FBase };
+            cIn.Items.AddRange(InputModeLabels);
+            cIn.SelectedIndex = Math.Max(0, Array.IndexOf(InputModes, S.Get("InputMode", "auto")));
+            cIn.SelectedIndexChanged += (s, e) => { S.Set("InputMode", InputModes[cIn.SelectedIndex]); S.Save(); ReconnectInput(); };
+            inRow.Controls.Add(cIn);
+            inRow.Controls.Add(new Label { AutoSize = true, Text = "  xoay (console)", Margin = new Padding(3, 6, 6, 0) });
+            var cRot = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, Font = FBase };
+            cRot.Items.AddRange(new object[] { "0° (ngang như cấu hình)", "90° (game dọc)", "180°", "270° (dọc ngược)" });
+            cRot.SelectedIndex = S.GetInt("ConsoleRotation", 0) & 3;
+            cRot.SelectedIndexChanged += (s, e) => { S.Set("ConsoleRotation", cRot.SelectedIndex); S.Save(); ReconnectInput(); };
+            inRow.Controls.Add(cRot);
+            opts.Controls.Add(inRow);
 
             var bar = Row();  // Thanh nút trên cùng
             // Nút Lưu cấu hình
@@ -1625,8 +1634,7 @@ namespace DsoftEmu
             // Bật/tắt map phím theo ô tick; người dùng tự tick bật khi ADB tắt -> hỏi bật ADB, từ chối thì bỏ tick
             kMap.CheckedChanged += (s, e) =>
             {
-                if (kMap.Checked && !syncingMap && !AdbReady && !RequireAdb("Map phím")) { syncingMap = true; kMap.Checked = false; syncingMap = false; }
-                mapper.Enabled = kMap.Checked;
+                mapper.Enabled = kMap.Checked;  // Không cần ADB: không có ADB thì gửi chạm qua console emulator
             };
             Btn(bar, "Lưu && áp dụng  (Ctrl+S)", (s, e) => ApplyKeymap(true), CBlue);  // "&&" hiển thị thành "&" trên nút
             Btn(bar, "Lấy toạ độ từ màn hình...", (s, e) => Pick(keyEdit));  // Nút lấy toạ độ từ ảnh chụp màn hình
@@ -1646,10 +1654,12 @@ namespace DsoftEmu
         // Mở cửa sổ chọn toạ độ trên ảnh chụp màn hình, chèn kết quả vào ô soạn
         void Pick(TextBox target)
         {
-            if (!RequireAdb("Lấy toạ độ từ màn hình")) return;  // Chụp màn hình cần ADB
-            var adb = emu.NewAdb();  // Tạo kết nối adb
+            // Có ADB: chụp qua adb (đúng hướng xoay). Không có: chụp qua console emulator (hướng gốc - đúng khi game chạy ngang như cấu hình)
+            Func<byte[]> grab;
+            if (AdbReady) grab = emu.NewAdb().Screencap;
+            else { int port = emu.Port; grab = () => EmuConsoleConn.Screenshot(port); }
             // Chọn xong thì chèn chuỗi toạ độ vào vị trí con trỏ
-            new PickerForm(adb.Screencap, t => UI(() => { target.SelectedText = t; target.Focus(); })).Show(this);
+            new PickerForm(grab, t => UI(() => { target.SelectedText = t; target.Focus(); })).Show(this);
         }
 
         // =============== Auto click ===============
@@ -1659,7 +1669,7 @@ namespace DsoftEmu
         {
             var bar = Row();  // Thanh công cụ
             // Nút Chạy: lưu rồi bật macro đang chọn nếu chưa chạy
-            Btn(bar, "▶ Chạy", (s, e) => { SaveMacro(); var n = CurMacro(); if (n != null && !MacroRunner.IsRunning(n) && RequireAdb("Auto click")) ToggleMacro(n); }, CGreen);
+            Btn(bar, "▶ Chạy", (s, e) => { SaveMacro(); var n = CurMacro(); if (n != null && !MacroRunner.IsRunning(n)) ToggleMacro(n); }, CGreen);
             // Nút Dừng macro đang chọn
             Btn(bar, "■ Dừng", (s, e) => { var n = CurMacro(); if (n != null) MacroRunner.Stop(n); }, CRed);
             Btn(bar, "Dừng tất cả", (s, e) => MacroRunner.StopAll());  // Nút dừng tất cả macro
@@ -1739,7 +1749,6 @@ namespace DsoftEmu
         {
             if (MacroRunner.IsRunning(name)) { MacroRunner.Stop(name); return; }  // Đang chạy thì dừng
             // Gọi từ phím tắt lúc đang chơi: không bật hộp thoại (sẽ che game), chỉ ghi log
-            if (!AdbReady) { Log.I("Macro '" + name + "' cần ADB - bấm 'ADB: TẮT' ở thanh bên để bật."); return; }
             string f = Path.Combine(MacroDir, name + ".txt");  // Đường dẫn file macro
             if (!File.Exists(f)) { Log.I("Không có macro " + f); return; }  // Không có file thì báo
             var errs = new List<string>();  // Danh sách lỗi cú pháp
@@ -1752,35 +1761,97 @@ namespace DsoftEmu
         // =============== Chung ===============
 
         // Kết nối điều khiển: ưu tiên scrcpy (nhanh), lỗi thì dùng adb input (chậm)
+        // Kiểu điều khiển (settings InputMode): auto = scrcpy nếu có ADB, không thì console; còn lại ép đúng 1 kiểu
+        static readonly string[] InputModes = { "auto", "console", "scrcpy", "adb" };
+        static readonly string[] InputModeLabels = {
+            "Tự động (scrcpy nếu có ADB, không thì console)",
+            "Console emulator (không cần ADB, game không thấy)",
+            "scrcpy (cần ADB, nhanh nhất)",
+            "adb input (cần ADB, chậm, 1 ngón)" };
+
+        // Đổi cấu hình điều khiển -> nối lại input ở nền
+        void ReconnectInput()
+        {
+            Task.Run(() => { if (emu.Ready || emu.Running) ConnectInput(); UI(RefreshRuntime); });
+        }
+
+        // auto: scrcpy (khi được dùng ADB và adb online) > console emulator (không cần ADB) > adb input (chậm)
         void ConnectInput()
         {
-            if (!AdbReady) return;  // Không được dùng ADB thì không kết nối
             lock (touch)  // Khoá tránh 2 luồng kết nối cùng lúc
             {
                 var e = emu;  // Máy đang chọn (input chỉ nối vào máy này)
-                if (!e.AdbOn || e.AdbKilled) return;
-                var adb = e.NewAdb();  // Tạo kết nối adb
-                if (!adb.Online()) { Log.I("Chưa thấy thiết bị " + adb.Serial + " trong adb."); return; }  // Thiết bị chưa online thì báo
-                e.Ready = true;  // Đánh dấu Android sẵn sàng
+                if (!e.Running && !e.Adopted && !e.Ready) return;  // Giả lập không chạy
                 var old = touch.Inj;  // Bộ gửi chạm cũ
                 touch.Inj = null;  // Gỡ bộ cũ
                 if (old != null) old.Dispose();  // Giải phóng bộ cũ
-                touch.Scr.Attach(adb);  // Gắn adb cho phần đọc thông tin màn hình
+
+                string mode = S.Get("InputMode", "auto");
+                if (Array.IndexOf(InputModes, mode) < 0) mode = "auto";
+                if (mode != "auto") { ConnectInputForced(e, mode); UI(RefreshRuntime); return; }
 
                 ITouch inj = null;  // Bộ gửi chạm mới
-                string jar = SdkInstaller.ScrcpyFile(emu.SdkDir);  // Đường dẫn scrcpy-server
-                // Có scrcpy-server thì thử dùng
-                if (File.Exists(jar))
+                Adb adb = null;
+                if (e.AdbOn && !e.AdbKilled)
                 {
-                    var s = new ScrcpyTouch(adb, touch.Scr, jar);  // Tạo bộ gửi chạm scrcpy
-                    if (s.Start()) inj = s;  // Khởi động được thì dùng
-                    else Log.I("⚠ scrcpy-server không khởi động được, chuyển sang adb input.");  // Không được thì báo
+                    adb = e.NewAdb();
+                    if (!adb.Online()) { Log.I("Chưa thấy thiết bị " + adb.Serial + " trong adb -> dùng console emulator."); adb = null; }
                 }
-                else Log.I("⚠ Thiếu " + jar + " -> dùng adb input (chậm).");  // Thiếu file scrcpy thì báo
-                if (inj == null) inj = new AdbTouch(adb, touch.Scr);  // Dự phòng: dùng adb input
+                if (adb != null)
+                {
+                    e.Ready = true;  // Đánh dấu Android sẵn sàng
+                    touch.Scr.Attach(adb);  // Gắn adb cho phần đọc thông tin màn hình
+                    string jar = SdkInstaller.ScrcpyFile(emu.SdkDir);  // Đường dẫn scrcpy-server
+                    if (File.Exists(jar))
+                    {
+                        var s = new ScrcpyTouch(adb, touch.Scr, jar);  // Tạo bộ gửi chạm scrcpy
+                        if (s.Start()) inj = s;  // Khởi động được thì dùng
+                        else Log.I("⚠ scrcpy-server không khởi động được, chuyển sang console emulator.");
+                    }
+                    else Log.I("⚠ Thiếu " + jar + " -> dùng console emulator.");
+                }
+                if (inj == null) inj = NewConsoleTouch(e);
+                if (inj == null && adb != null) inj = new AdbTouch(adb, touch.Scr);  // Dự phòng cuối: adb input
                 touch.Inj = inj;  // Gắn bộ gửi chạm mới
                 UI(RefreshRuntime);  // Cập nhật trạng thái
             }
+        }
+
+        // Console emulator: kích thước lấy từ cấu hình máy ảo (hoặc từ adb nếu đang đọc được); hướng xoay theo ConsoleRotation khi không có adb
+        ITouch NewConsoleTouch(EmulatorController e)
+        {
+            if (!touch.Scr.Attached || touch.Scr.W <= 0)
+            {
+                int w, h, dpi; e.ScreenOf(e.Display, out w, out h, out dpi);
+                touch.Scr.SetNative(w, h, S.GetInt("ConsoleRotation", 0));
+            }
+            var c = new ConsoleTouch(e.Port, touch.Scr);
+            if (c.Start()) return c;
+            Log.I("⚠ Không kết nối được console emulator (cổng " + e.Port + ").");
+            return null;
+        }
+
+        // Ép đúng 1 kiểu điều khiển theo cấu hình (không tự chuyển kiểu khác). Gọi trong lock(touch).
+        void ConnectInputForced(EmulatorController e, string mode)
+        {
+            if (mode == "console")
+            {
+                touch.Scr.Detach();  // Không đọc adb: dùng kích thước cấu hình + xoay đã chọn
+                touch.Inj = NewConsoleTouch(e);
+                return;
+            }
+            // scrcpy / adb input cần ADB trong Android
+            if (!e.AdbOn || e.AdbKilled) { Log.I("⚠ Điều khiển '" + mode + "' cần ADB, mà ADB đang tắt -> chưa có input. Đổi sang Console hoặc bật ADB."); return; }
+            var adb = e.NewAdb();
+            if (!adb.Online()) { Log.I("⚠ Điều khiển '" + mode + "': chưa thấy " + adb.Serial + " trong adb -> chưa có input."); return; }
+            e.Ready = true;
+            touch.Scr.Attach(adb);
+            if (mode == "adb") { touch.Inj = new AdbTouch(adb, touch.Scr); return; }
+            string jar = SdkInstaller.ScrcpyFile(e.SdkDir);
+            if (!File.Exists(jar)) { Log.I("⚠ Thiếu " + jar + " -> chưa có input (scrcpy)."); return; }
+            var s = new ScrcpyTouch(adb, touch.Scr, jar);
+            if (s.Start()) touch.Inj = s;
+            else Log.I("⚠ scrcpy-server không khởi động được -> chưa có input.");
         }
 
         // Cài APK qua adb ở nền
@@ -1818,11 +1889,17 @@ namespace DsoftEmu
                         e.Adopted = true;  // Emulator chạy sẵn từ phiên trước
                         try
                         {
-                            if (e.AdbKilled) return;  // ADB đã tắt sẵn trong Android: hỏi adb cũng không được -> không bật server
-                            if (!e.NewAdb().Booted()) return;  // Android chưa chạy xong / adb không kết nối
+                            if (e.AdbKilled || !e.NewAdb().Booted())  // ADB tắt sẵn / adb không kết nối: vẫn điều khiển được qua console
+                            {
+                                e.Ready = true;  // Console trả lời -> emulator đang chạy
+                                if (e == emu) ConnectInput();
+                                UI(RefreshAll);
+                                return;
+                            }
                             e.Ready = true;  // Android đang chạy
                             e.AdbKilled = false;  // ADB đang chạy
-                            if (!e.AdbOn) e.KillAdb(); else if (e == emu) ConnectInput();  // Tắt ADB, hoặc nối input nếu là máy đang chọn
+                            if (!e.AdbOn) e.KillAdb();  // Không cho dùng ADB -> tắt
+                            if (e == emu) ConnectInput();  // Nối input nếu là máy đang chọn (scrcpy hoặc console)
                             UI(RefreshAll);  // Làm mới giao diện
                         }
                         finally { e.ReleaseAdbIfIdle(); }  // Không máy nào cần ADB -> tắt adb server riêng

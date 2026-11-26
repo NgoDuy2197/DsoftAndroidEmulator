@@ -33,8 +33,21 @@ namespace DsoftEmu
             f = new ScreenFilter(target, dimPct, gray);
             on[port] = f;
             f.FormClosed += (s, e) => on.Remove(port);
-            f.Show();
+            // Tạo cửa sổ ở chế độ DPI theo từng màn hình: toạ độ luôn là pixel thật, khớp với khung cửa sổ giả lập
+            // (app chỉ "system DPI aware": khi RDP / đổi scale màn hình, toạ độ bị Windows quy đổi -> lớp phủ lệch)
+            IntPtr old = PerMonitor();
+            try { f.Show(); } finally { Restore(old); }
             return true;
+        }
+
+        // Chuyển luồng hiện tại sang DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (Win10 1703+); trả ngữ cảnh cũ để khôi phục
+        static IntPtr PerMonitor()
+        {
+            try { return SetThreadDpiAwarenessContext(new IntPtr(-4)); } catch { return IntPtr.Zero; }  // Windows cũ: không có hàm -> bỏ qua
+        }
+        static void Restore(IntPtr old)
+        {
+            if (old != IntPtr.Zero) try { SetThreadDpiAwarenessContext(old); } catch { }
         }
 
         /// <summary>Tắt lớp phủ của một máy (máy dừng) hoặc tất cả (port &lt; 0).</summary>
@@ -55,8 +68,10 @@ namespace DsoftEmu
             BackColor = Color.Black;
             Bounds = new Rectangle(-32000, -32000, 1, 1);  // Chưa hiện ra cho tới khi bám được cửa sổ giả lập
             tick.Interval = gray ? 33 : 50;  // Đen trắng cần vẽ lại liên tục (~30 hình/giây); làm tối chỉ cần bám vị trí/thứ tự nhanh
-            tick.Tick += (s, e) => Follow();
+            tick.Tick += (s, e) => { IntPtr old = PerMonitor(); try { Follow(); } finally { Restore(old); } };
         }
+
+        bool logged;  // Đã ghi log lần đo đầu tiên
 
         protected override bool ShowWithoutActivation { get { return true; } }  // Không cướp focus của cửa sổ giả lập
 
@@ -108,10 +123,17 @@ namespace DsoftEmu
             }
             KeepAbove(h);
             int w = r.R - r.L, hh = r.B - r.T;
-            if (Left != r.L || Top != r.T || Width != w || Height != hh)
+            // So với vị trí THẬT của lớp phủ (đọc lại từ Windows, không dùng Left/Top WinForms lưu sẵn) -> lệch vì lý do gì cũng tự đo lại
+            RECT me; GetWindowRect(Handle, out me);
+            if (me.L != r.L || me.T != r.T || me.R - me.L != w || me.B - me.T != hh)
             {
                 SetWindowPos(Handle, IntPtr.Zero, r.L, r.T, w, hh, 0x10 | 0x4);  // NOACTIVATE | NOZORDER
                 if (mag != IntPtr.Zero) SetWindowPos(mag, IntPtr.Zero, 0, 0, w, hh, 0x10 | 0x4);
+                if (!logged)
+                {
+                    logged = true;
+                    try { Log.I("Lớp phủ: cửa sổ giả lập " + r.L + "," + r.T + " " + w + "x" + hh + " (DPI " + GetDpiForWindow(h) + ")"); } catch { }
+                }
             }
             if (mag != IntPtr.Zero)
             {
@@ -166,5 +188,7 @@ namespace DsoftEmu
         [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
         [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
         [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+        [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
+        [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
     }
 }
